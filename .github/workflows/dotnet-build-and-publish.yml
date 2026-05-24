@@ -1,0 +1,306 @@
+# Reusable workflow: build, test, and optionally publish a .NET solution.
+#
+# This consolidates the work that PR builds and main-branch publishes both
+# need to do. The caller controls behavior with inputs:
+#
+#   - check-paths:  whether to run a preflight that decides if the build
+#                   should happen based on changed files. PR callers set
+#                   this to true so doc-only PRs skip cleanly. Manual or
+#                   push callers usually set it to false.
+#   - push-github:  push the built packages to GitHub Packages.
+#   - push-nuget:   push the built packages to NuGet.org. When true, a
+#                   successful push also creates a git tag and a GitHub
+#                   Release.
+#
+# The preflight is a separate job so that, when it decides not to build,
+# the build job is skipped rather than running and short-circuiting. A
+# skipped job is reported as success to branch protection, which is what
+# keeps doc-only PRs from blocking merges.
+name: .NET Build and Publish (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      solution-path:
+        description: 'Path to the .sln file to build and test'
+        required: true
+        type: string
+
+      dotnet-version:
+        description: 'SDK version for actions/setup-dotnet'
+        required: false
+        type: string
+        default: '10.0.x'
+
+      check-paths:
+        description: 'If true, run the preflight gate and only build when relevant files changed'
+        required: false
+        type: boolean
+        default: false
+
+      include-paths:
+        description: 'Multi-line glob list of paths that count as relevant changes (used when check-paths is true)'
+        required: false
+        type: string
+        default: |
+          src/**
+
+      ignore-paths:
+        description: 'Multi-line glob list of paths to ignore even if they match include-paths'
+        required: false
+        type: string
+        default: |
+          **/*.md
+
+      artifacts-search-root:
+        description: 'Directory under which to find produced .nupkg and .snupkg files'
+        required: false
+        type: string
+        default: 'src'
+
+      test-filter:
+        description: 'Value passed to dotnet test --filter. Empty string runs all tests.'
+        required: false
+        type: string
+        default: 'Category!=Integration'
+
+      push-github:
+        description: 'Push the built packages to GitHub Packages'
+        required: false
+        type: boolean
+        default: false
+
+      push-nuget:
+        description: 'Push the built packages to NuGet.org (also creates tag and release on success)'
+        required: false
+        type: boolean
+        default: false
+
+      environment:
+        description: 'Optional GitHub Environment name. When set, the build job targets this environment so environment-scoped secrets and protection rules apply. Leave empty for repository-scoped secrets (recommended for solo maintainers).'
+        required: false
+        type: string
+        default: ''
+
+      verify-format:
+        description: 'Run "dotnet format --verify-no-changes" as a gate. Defaults to false because turning this on for a codebase that has never been formatted will fail every PR until the codebase is cleaned up.'
+        required: false
+        type: boolean
+        default: false
+
+      upload-coverage:
+        description: 'Collect code coverage during dotnet test and upload to Codecov. Requires CODECOV_TOKEN to be configured for private repos; public repos can upload without a token.'
+        required: false
+        type: boolean
+        default: false
+
+    secrets:
+      NUGET_API_KEY:
+        description: 'API key for NuGet.org. Required when push-nuget is true.'
+        required: false
+      CODECOV_TOKEN:
+        description: 'Codecov upload token. Not required for public repos (Codecov accepts tokenless uploads from public GitHub repos), but recommended to avoid rate limits.'
+        required: false
+
+jobs:
+  # Decides whether the build job should run, based on the changed files in
+  # the triggering event. When check-paths is false, this job reports
+  # should-run=true unconditionally so the build always runs.
+  preflight:
+    name: Preflight Check
+    runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.decide.outputs.should-run }}
+    steps:
+      - name: Checkout
+        if: inputs.check-paths
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for relevant changes
+        if: inputs.check-paths
+        id: should-run
+        uses: scottoffen/should-run@v0
+        with:
+          include: ${{ inputs.include-paths }}
+          ignore: ${{ inputs.ignore-paths }}
+
+      # Normalize the output: when check-paths is false, we always run.
+      # When check-paths is true, we defer to should-run's decision.
+      - name: Decide
+        id: decide
+        env:
+          CHECK_PATHS: ${{ inputs.check-paths }}
+          SHOULD_RUN: ${{ steps.should-run.outputs.should-run }}
+        run: |
+          if [ "$CHECK_PATHS" != "true" ]; then
+            echo "should-run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should-run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build, Test, and Publish
+    needs: preflight
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+
+    # When the caller passes an environment name, GitHub applies that
+    # environment's protection rules (required reviewers, branch
+    # restrictions, wait timers) before any step runs, and the
+    # environment's secrets are available to the job. Empty string means
+    # no environment; repository-scoped secrets are used as normal.
+    environment: ${{ inputs.environment }}
+
+    permissions:
+      contents: write    # for tagging and creating releases on NuGet publish
+      packages: write    # for pushing to GitHub Packages
+
+    steps:
+      # Full history is required for Nerdbank.GitVersioning to compute the
+      # version height. Shallow clones produce wrong or unstable versions.
+      - name: Checkout (full history for NBGV)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ inputs.dotnet-version }}
+
+      - name: Display installed SDKs
+        run: dotnet --list-sdks
+
+      # Cache the NuGet HTTP cache. Keyed on the hash of every project file
+      # and the Directory.Build.props so a dependency change invalidates the
+      # cache, with a fallback to the most recent compatible cache on miss.
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('src/**/*.csproj', 'src/Directory.Build.props') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore dependencies
+        run: dotnet restore "${{ inputs.solution-path }}"
+
+      # Gate on consistent formatting before spending time on the full
+      # build. --verify-no-changes makes the command read-only: it exits 2
+      # when files don't conform, without modifying anything, so the
+      # failing run leaves the working tree clean.
+      - name: Verify formatting
+        if: inputs.verify-format
+        run: dotnet format "${{ inputs.solution-path }}" --verify-no-changes --no-restore
+
+      # Release configuration so what we test matches what we ship.
+      # GeneratePackageOnBuild=true in the consuming project's
+      # Directory.Build.props means .nupkg and .snupkg files are produced as
+      # a side effect of this step; no separate dotnet pack is needed.
+      - name: Build (Release)
+        run: dotnet build "${{ inputs.solution-path }}" --no-restore --configuration Release
+
+      - name: Test
+        env:
+          TEST_FILTER: ${{ inputs.test-filter }}
+          # --collect:"XPlat Code Coverage" enables the Coverlet collector
+          # bundled with modern test SDKs. Output goes to the TestResults
+          # directory per-project as coverage.cobertura.xml.
+          COVERAGE_ARG: ${{ inputs.upload-coverage && '--collect:"XPlat Code Coverage"' || '' }}
+        run: |
+          if [ -n "$TEST_FILTER" ]; then
+            dotnet test "${{ inputs.solution-path }}" \
+              --no-build --configuration Release --verbosity normal \
+              --filter "$TEST_FILTER" \
+              $COVERAGE_ARG
+          else
+            dotnet test "${{ inputs.solution-path }}" \
+              --no-build --configuration Release --verbosity normal \
+              $COVERAGE_ARG
+          fi
+
+      # Upload coverage to Codecov. The action discovers cobertura.xml
+      # files automatically under TestResults/. fail_ci_if_error: false
+      # is deliberate: a Codecov outage or upload failure should not
+      # fail the build, since the package artifacts are still valid.
+      - name: Upload coverage to Codecov
+        if: inputs.upload-coverage
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+      # Collect every .nupkg and .snupkg produced anywhere under the search
+      # root into a single artifacts directory for the push steps.
+      - name: Stage packages
+        env:
+          SEARCH_ROOT: ${{ inputs.artifacts-search-root }}
+        run: |
+          mkdir -p artifacts
+          find "$SEARCH_ROOT" -type f \( -name '*.nupkg' -o -name '*.snupkg' \) \
+            -path '*/bin/Release/*' -exec cp {} artifacts/ \;
+          ls -la artifacts/
+
+      # Push to GitHub Packages. --skip-duplicate makes manual re-runs
+      # idempotent: re-triggering on the same commit will not fail when the
+      # same version already exists in the registry.
+      - name: Push to GitHub Packages
+        if: inputs.push-github
+        env:
+          GITHUB_PACKAGES_URL: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+          GH_PACKAGES_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          dotnet nuget push 'artifacts/*.nupkg'  --source "$GITHUB_PACKAGES_URL" --api-key "$GH_PACKAGES_TOKEN" --skip-duplicate
+          dotnet nuget push 'artifacts/*.snupkg' --source "$GITHUB_PACKAGES_URL" --api-key "$GH_PACKAGES_TOKEN" --skip-duplicate
+
+      # Push to NuGet.org. No --skip-duplicate: NuGet rejects republishes of
+      # the same version anyway, and we want the failure to be loud.
+      - name: Push to NuGet.org
+        id: nuget_push
+        if: inputs.push-nuget
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if [ -z "$NUGET_API_KEY" ]; then
+            echo "::error::push-nuget is true but the NUGET_API_KEY secret was not provided to this workflow."
+            echo "Either add NUGET_API_KEY to the caller's 'secrets:' block, or use 'secrets: inherit'."
+            exit 1
+          fi
+          dotnet nuget push 'artifacts/*.nupkg'  --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY"
+          dotnet nuget push 'artifacts/*.snupkg' --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY"
+
+      # Tag and release only when NuGet accepted the package. These steps
+      # represent "this commit is on NuGet.org" and doing them on a failed
+      # push would misrepresent reality. outcome == 'success' is stricter
+      # than != 'failure' (it also excludes 'skipped' and 'cancelled').
+      - name: Get NuGet package version
+        if: steps.nuget_push.outcome == 'success'
+        id: get_version
+        working-directory: ${{ inputs.artifacts-search-root }}
+        run: |
+          version=$(dotnet nbgv get-version -v NuGetPackageVersion)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Version to tag: $version"
+
+      - name: Create git tag
+        if: steps.nuget_push.outcome == 'success'
+        env:
+          VERSION: ${{ steps.get_version.outputs.version }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "Release v$VERSION"
+          git push origin "v$VERSION"
+
+      - name: Create GitHub Release
+        if: steps.nuget_push.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.get_version.outputs.version }}
+        run: |
+          gh release create "v$VERSION" \
+            --title "v$VERSION" \
+            --generate-notes \
+            --target main

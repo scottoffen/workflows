@@ -1,0 +1,50 @@
+# Static analysis for the reusable workflows in this repo.
+#
+# Why this exists: a typo or undeclared-input reference in a reusable
+# workflow does not fail at merge time; it fails when a downstream consumer
+# next runs the workflow, which could be days later and in a repo whose
+# owner is not watching the build queue. actionlint catches the common
+# classes of mistake before the PR lands here, so v0 never advances onto a
+# broken commit.
+#
+# Triggers on every PR (gating mechanism) and on workflow_dispatch (for
+# ad-hoc reruns and for sanity-checking after force-updating the moving
+# tags).
+name: Lint workflows
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+# Cancel earlier in-progress runs for the same PR when a new commit lands;
+# only the latest commit's lint result is interesting.
+concurrency:
+  group: lint-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+
+    # Default GITHUB_TOKEN permissions are fine here. The lint step does
+    # not write to the repo, push packages, or read secrets; it only reads
+    # the checked-out files.
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # rhysd/actionlint is the official wrapper around the actionlint
+      # binary. It installs the binary, runs it across every YAML file
+      # under .github/workflows/ in the checked-out repo, and fails the
+      # job on any finding.
+      #
+      # No config file is committed yet. If actionlint produces noisy
+      # findings we disagree with, suppress specific rules by adding a
+      # .github/actionlint.yaml at the repo root rather than passing
+      # flags here; that keeps the suppressions visible in code review.
+      - name: Run actionlint
+        uses: rhysd/actionlint@v1

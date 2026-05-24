@@ -1,0 +1,23 @@
+# Mark and close stale issues and pull requests. Delegates to the shared
+# reusable workflow.
+#
+# Runs daily at 06:00 UTC, when activity is low for most timezones. The
+# schedule has no special meaning; pick a different hour if it conflicts
+# with anything.
+name: Stale
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  stale:
+    uses: scottoffen/workflows/.github/workflows/stale.yml@v0
+    # All defaults are reasonable for a typical OSS project. Override only
+    # if this repo needs different timing or different exemption labels,
+    # e.g.:
+    #
+    # with:
+    #   days-before-issue-stale: 90
+    #   exempt-issue-labels: pinned,security,help wanted,roadmap
