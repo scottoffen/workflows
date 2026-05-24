@@ -1,0 +1,121 @@
+# Reusable workflow: mark and close stale issues and pull requests.
+#
+# Wraps actions/stale with opinionated defaults suited to small OSS
+# projects. Issues and PRs have separate timelines because PRs that go
+# inactive are usually dead, while issues sometimes need months of quiet
+# before someone returns to them.
+#
+# Items labeled with any value in exempt-issue-labels or exempt-pr-labels
+# are left alone, so 'pinned', 'security', and 'help wanted' issues stay
+# open indefinitely regardless of activity.
+#
+# Runs on a daily cron in the caller. workflow_dispatch is supported so I
+# can dry-run by passing operations-per-run=0 from a manual trigger if I
+# ever need to verify config without taking action.
+name: Stale issues and PRs (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      days-before-issue-stale:
+        description: 'Days of inactivity before an issue is marked stale'
+        required: false
+        type: number
+        default: 60
+
+      days-before-issue-close:
+        description: 'Days after stale-marking before an issue is closed'
+        required: false
+        type: number
+        default: 7
+
+      days-before-pr-stale:
+        description: 'Days of inactivity before a PR is marked stale'
+        required: false
+        type: number
+        default: 30
+
+      days-before-pr-close:
+        description: 'Days after stale-marking before a PR is closed'
+        required: false
+        type: number
+        default: 7
+
+      exempt-issue-labels:
+        description: 'Comma-separated labels that exempt an issue from staling'
+        required: false
+        type: string
+        default: 'pinned,security,help wanted,good first issue'
+
+      exempt-pr-labels:
+        description: 'Comma-separated labels that exempt a PR from staling'
+        required: false
+        type: string
+        default: 'pinned,security,work in progress'
+
+jobs:
+  stale:
+    name: Mark and close stale items
+    runs-on: ubuntu-latest
+
+    # issues: write - needed to add the stale label and close issues
+    # pull-requests: write - same for PRs
+    permissions:
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Run stale check
+        uses: actions/stale@v10
+        with:
+          # Authentication. The default GITHUB_TOKEN is sufficient for
+          # the issues and pull-requests permissions declared above.
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+          # Timeline knobs from inputs.
+          days-before-issue-stale: ${{ inputs.days-before-issue-stale }}
+          days-before-issue-close: ${{ inputs.days-before-issue-close }}
+          days-before-pr-stale: ${{ inputs.days-before-pr-stale }}
+          days-before-pr-close: ${{ inputs.days-before-pr-close }}
+
+          # Exemption labels from inputs.
+          exempt-issue-labels: ${{ inputs.exempt-issue-labels }}
+          exempt-pr-labels: ${{ inputs.exempt-pr-labels }}
+
+          # Label applied when marking stale. The same label is used for
+          # both issues and PRs so I only have to look in one place.
+          stale-issue-label: stale
+          stale-pr-label: stale
+
+          # Messages posted when an item is marked stale. Kept short and
+          # explicit about what's about to happen and how to keep the
+          # item alive.
+          stale-issue-message: >
+            This issue has been automatically marked as stale because it
+            has not had activity in a while. It will be closed in 7 days
+            if no further activity occurs. Comment to keep it open, or
+            apply the 'pinned' label.
+          stale-pr-message: >
+            This pull request has been automatically marked as stale
+            because it has not had activity in a while. It will be
+            closed in 7 days if no further activity occurs. Push a
+            commit or comment to keep it open.
+
+          # Messages posted at close time. Brief; the reason is already
+          # in the stale comment.
+          close-issue-message: >
+            Closing this issue due to inactivity. Feel free to reopen if
+            this is still relevant.
+          close-pr-message: >
+            Closing this pull request due to inactivity. Feel free to
+            reopen and continue if you want to revisit it.
+
+          # Process in order of oldest-first so a heavy backlog is
+          # cleared deterministically across multiple runs rather than
+          # randomly sampled.
+          ascending: true
+
+          # actions/stale rate-limits itself to avoid API exhaustion on
+          # large repos. The default of 30 operations per run is fine
+          # for any repo I'm likely to use this on.
+          operations-per-run: 30

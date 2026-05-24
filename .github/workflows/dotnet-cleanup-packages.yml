@@ -1,0 +1,209 @@
+# Reusable workflow: delete prerelease versions from GitHub Packages.
+#
+# This is the same cleanup logic as the per-repo version, parameterized on
+# the list of package names. The caller decides which packages this run
+# should sweep.
+#
+# Release versions (no prerelease segment, e.g. 1.2.3) are NEVER deleted
+# regardless of mode. Only versions whose name contains a '-' character
+# are considered, which is the SemVer prerelease discriminator.
+#
+# Authentication: the default GITHUB_TOKEN cannot delete versions from a
+# user-scoped GitHub Packages registry. A PAT with the 'delete:packages'
+# scope must be provided as the PACKAGES_DELETE_TOKEN secret. The workflow
+# fails fast with a clear message if it is missing.
+name: Cleanup Prerelease Packages (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      package-names:
+        description: 'Multi-line list of NuGet package IDs to clean up (one per line)'
+        required: true
+        type: string
+
+      mode:
+        description: 'Either "prerelease-only" or "older-than-days"'
+        required: true
+        type: string
+
+      days:
+        description: 'For older-than-days mode: delete prereleases older than this many days'
+        required: false
+        type: number
+        default: 30
+
+      dry_run:
+        description: 'If true, list what would be deleted without actually deleting'
+        required: false
+        type: boolean
+        default: true
+
+      environment:
+        description: 'Optional GitHub Environment name. When set, the cleanup job targets this environment so environment-scoped secrets and protection rules apply. Leave empty for repository-scoped secrets (recommended for solo maintainers).'
+        required: false
+        type: string
+        default: ''
+
+    secrets:
+      PACKAGES_DELETE_TOKEN:
+        description: 'PAT with delete:packages scope. Required.'
+        required: true
+
+jobs:
+  cleanup:
+    name: Cleanup Prerelease Packages
+    runs-on: ubuntu-latest
+
+    # When the caller passes an environment name, GitHub applies that
+    # environment's protection rules (required reviewers, branch
+    # restrictions, wait timers) before any step runs, and the
+    # environment's secrets are available to the job.
+    environment: ${{ inputs.environment }}
+
+    steps:
+      # Validate the deletion token before doing anything else. The default
+      # GITHUB_TOKEN cannot delete user-scoped package versions, so without
+      # PACKAGES_DELETE_TOKEN every delete call would fail one at a time.
+      # Failing here makes the requirement obvious.
+      - name: Verify deletion token is configured
+        env:
+          PACKAGES_DELETE_TOKEN: ${{ secrets.PACKAGES_DELETE_TOKEN }}
+        run: |
+          if [ -z "$PACKAGES_DELETE_TOKEN" ]; then
+            echo "::error::Secret PACKAGES_DELETE_TOKEN was not provided to this workflow."
+            echo "Create a Personal Access Token with the 'delete:packages' scope,"
+            echo "add it as a repository secret named PACKAGES_DELETE_TOKEN, and"
+            echo "either pass it via the caller's 'secrets:' block or use 'secrets: inherit'."
+            exit 1
+          fi
+          echo "PACKAGES_DELETE_TOKEN is set."
+
+      - name: Echo run parameters
+        env:
+          MODE: ${{ inputs.mode }}
+          DAYS: ${{ inputs.days }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          echo "Mode:    $MODE"
+          echo "Days:    $DAYS"
+          echo "Dry run: $DRY_RUN"
+          echo "Owner:   ${{ github.repository_owner }}"
+          echo "Packages:"
+          echo "${{ inputs.package-names }}" | sed 's/^/  - /'
+
+      - name: Cleanup
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGES_DELETE_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          MODE: ${{ inputs.mode }}
+          DAYS: ${{ inputs.days }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          PACKAGE_NAMES: ${{ inputs.package-names }}
+        run: |
+          set -euo pipefail
+
+          # Read the package-names input as a newline-delimited list. Empty
+          # lines and whitespace-only lines are skipped so a trailing newline
+          # in the caller's YAML literal block does not produce an empty
+          # package name.
+          mapfile -t PACKAGES < <(echo "$PACKAGE_NAMES" | sed '/^[[:space:]]*$/d')
+
+          if [ "${#PACKAGES[@]}" -eq 0 ]; then
+            echo "::error::No package names provided."
+            exit 1
+          fi
+
+          # Validate each name against the NuGet ID character set. NuGet
+          # package IDs allow letters, digits, dots, underscores, and
+          # hyphens. A name with anything else (whitespace, shell
+          # metacharacters, slashes) would produce a silently-malformed
+          # gh api call later; fail fast instead.
+          INVALID=()
+          for pkg in "${PACKAGES[@]}"; do
+            if [[ ! "$pkg" =~ ^[A-Za-z0-9._-]+$ ]]; then
+              INVALID+=("$pkg")
+            fi
+          done
+
+          if [ "${#INVALID[@]}" -gt 0 ]; then
+            echo "::error::Invalid package name(s) in package-names input:"
+            for bad in "${INVALID[@]}"; do
+              echo "  - '$bad'"
+            done
+            echo "Package IDs may only contain letters, digits, dots, underscores, and hyphens."
+            exit 1
+          fi
+
+          if [ "$MODE" = "older-than-days" ]; then
+            CUTOFF=$(date -u -d "$DAYS days ago" +"%Y-%m-%dT%H:%M:%SZ")
+            echo "Cutoff date for deletion: $CUTOFF"
+          fi
+
+          TOTAL_FOUND=0
+          TOTAL_DELETED=0
+
+          for pkg in "${PACKAGES[@]}"; do
+            echo ""
+            echo "=== Package: $pkg ==="
+
+            versions_json=$(
+              gh api --paginate \
+                "/users/$OWNER/packages/nuget/$pkg/versions" \
+                --jq '.[] | select(.name | contains("-"))'
+            ) || {
+              echo "  (no versions found or package does not exist; skipping)"
+              continue
+            }
+
+            if [ -z "$versions_json" ]; then
+              echo "  No prerelease versions found."
+              continue
+            fi
+
+            case "$MODE" in
+              prerelease-only)
+                targets=$(echo "$versions_json" \
+                  | jq -r '"\(.id) \(.name) \(.created_at)"')
+                ;;
+              older-than-days)
+                targets=$(echo "$versions_json" \
+                  | jq -r --arg cutoff "$CUTOFF" '
+                      select(.created_at < $cutoff)
+                      | "\(.id) \(.name) \(.created_at)"
+                    ')
+                ;;
+              *)
+                echo "::error::Unknown mode: $MODE"
+                exit 1
+                ;;
+            esac
+
+            if [ -z "$targets" ]; then
+              echo "  No versions match the filter."
+              continue
+            fi
+
+            while IFS=' ' read -r id name created_at; do
+              [ -z "$id" ] && continue
+              TOTAL_FOUND=$((TOTAL_FOUND + 1))
+
+              if [ "$DRY_RUN" = "true" ]; then
+                echo "  DRY-RUN  would delete  $name  (id=$id, created=$created_at)"
+              else
+                echo "  DELETE   $name  (id=$id, created=$created_at)"
+                gh api --method DELETE --silent \
+                  "/users/$OWNER/packages/nuget/$pkg/versions/$id"
+                TOTAL_DELETED=$((TOTAL_DELETED + 1))
+              fi
+            done <<< "$targets"
+          done
+
+          echo ""
+          echo "=== Summary ==="
+          echo "Versions matched:  $TOTAL_FOUND"
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Versions deleted:  0 (dry run)"
+          else
+            echo "Versions deleted:  $TOTAL_DELETED"
+          fi

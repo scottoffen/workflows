@@ -1,0 +1,26 @@
+# Watches the third-party actions referenced in this repo's workflows
+# (actions/checkout, actions/setup-dotnet, actions/cache, rhysd/actionlint,
+# scottoffen/should-run, etc.) and opens PRs when newer versions are
+# released.
+#
+# Only the github-actions ecosystem is configured. No npm or NuGet here:
+# this repo ships no application code, just YAML.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    # One PR per week with every pending action bump, instead of one PR
+    # per action. Less notification noise; review once, merge once.
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"
+      include: scope
+    labels:
+      - dependencies
+      - github-actions

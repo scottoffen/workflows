@@ -1,0 +1,111 @@
+# Reusable workflow: build a Docusaurus site and deploy it to GitHub Pages.
+#
+# Two jobs, as required by the Pages deployment model:
+#
+#   build  - installs dependencies, runs the build script, and uploads the
+#            output directory as a Pages artifact.
+#   deploy - consumes that artifact and publishes it via actions/deploy-pages.
+#            The 'github-pages' environment is mandatory; Pages refuses to
+#            deploy from any other environment name. The deployment URL is
+#            surfaced through the environment's url field so it appears in
+#            the run summary and on the environments page.
+#
+# Consuming repos must set Settings -> Pages -> Source to "GitHub Actions"
+# once. Without that, deploy-pages fails with a not-very-helpful error.
+name: Docusaurus Deploy to GitHub Pages (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      docs-path:
+        description: 'Path to the Docusaurus project root (the directory containing package.json)'
+        required: false
+        type: string
+        default: 'docs'
+
+      build-output-subdir:
+        description: 'Subdirectory of docs-path containing the built site. Docusaurus default is "build".'
+        required: false
+        type: string
+        default: 'build'
+
+      node-version:
+        description: 'Node.js version for actions/setup-node'
+        required: false
+        type: string
+        default: '20'
+
+      install-command:
+        description: 'Command to install dependencies (e.g. "npm ci", "yarn install --frozen-lockfile", "pnpm install --frozen-lockfile")'
+        required: false
+        type: string
+        default: 'npm ci'
+
+      build-command:
+        description: 'Command to build the site (e.g. "npm run build", "yarn build", "pnpm build")'
+        required: false
+        type: string
+        default: 'npm run build'
+
+# These permissions are dictated by the Pages deployment model:
+#   contents: read    - checkout
+#   pages: write      - deploy-pages needs to write the deployment
+#   id-token: write   - deploy-pages uses OIDC to authenticate to Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Pages allows only one in-progress deployment per repo. cancel-in-progress
+# is true so a newer commit supersedes a still-running older deploy rather
+# than queueing behind it; the latest commit is the one we want live.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Docusaurus site
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.docs-path }}
+        run: ${{ inputs.install-command }}
+
+      - name: Build site
+        working-directory: ${{ inputs.docs-path }}
+        run: ${{ inputs.build-command }}
+
+      # upload-pages-artifact takes a path and tars it up under the magic
+      # name 'github-pages' that deploy-pages expects. The path is the
+      # build output directory relative to the repo root.
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: ${{ inputs.docs-path }}/${{ inputs.build-output-subdir }}
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+
+    # The 'github-pages' environment is required by deploy-pages. It is not
+    # configurable: any other name causes the deployment to fail. The url
+    # field reads the deployed page URL from the deploy step's output and
+    # surfaces it on the environments page.
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
