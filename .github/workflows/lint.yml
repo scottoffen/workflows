@@ -35,7 +35,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # rhysd/actionlint is the official wrapper around the actionlint
       # binary. It installs the binary, runs it across every YAML file

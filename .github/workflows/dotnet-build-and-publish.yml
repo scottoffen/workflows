@@ -114,7 +114,7 @@ jobs:
     steps:
       - name: Checkout
         if: inputs.check-paths
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -161,12 +161,12 @@ jobs:
       # Full history is required for Nerdbank.GitVersioning to compute the
       # version height. Shallow clones produce wrong or unstable versions.
       - name: Checkout (full history for NBGV)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: ${{ inputs.dotnet-version }}
 
@@ -177,7 +177,7 @@ jobs:
       # and the Directory.Build.props so a dependency change invalidates the
       # cache, with a fallback to the most recent compatible cache on miss.
       - name: Cache NuGet packages
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.nuget/packages
           key: ${{ runner.os }}-nuget-${{ hashFiles('src/**/*.csproj', 'src/Directory.Build.props') }}
@@ -227,7 +227,7 @@ jobs:
       # fail the build, since the package artifacts are still valid.
       - name: Upload coverage to Codecov
         if: inputs.upload-coverage
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
