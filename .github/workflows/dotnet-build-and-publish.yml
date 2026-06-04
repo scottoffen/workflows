@@ -268,8 +268,8 @@ jobs:
             echo "Either add NUGET_API_KEY to the caller's 'secrets:' block, or use 'secrets: inherit'."
             exit 1
           fi
-          dotnet nuget push 'artifacts/*.nupkg'  --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY"
-          dotnet nuget push 'artifacts/*.snupkg' --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY"
+          dotnet nuget push 'artifacts/*.nupkg'  --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate
+          dotnet nuget push 'artifacts/*.snupkg' --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate
 
       # Tag and release only when NuGet accepted the package. These steps
       # represent "this commit is on NuGet.org" and doing them on a failed
