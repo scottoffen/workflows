@@ -37,14 +37,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      # rhysd/actionlint is the official wrapper around the actionlint
-      # binary. It installs the binary, runs it across every YAML file
-      # under .github/workflows/ in the checked-out repo, and fails the
-      # job on any finding.
+      # rhysd/actionlint does not publish a `uses:` action, so we run the
+      # binary via the project's download script, which is the approach it
+      # recommends for CI. The script is the faster option: it fetches a
+      # single small Go binary rather than pulling the official Docker image,
+      # which also bundles shellcheck and pyflakes and so costs more to pull
+      # on every PR run. shellcheck is already pre-installed on the ubuntu
+      # runner, so actionlint's shellcheck integration still works.
       #
-      # No config file is committed yet. If actionlint produces noisy
-      # findings we disagree with, suppress specific rules by adding a
-      # .github/actionlint.yaml at the repo root rather than passing
-      # flags here; that keeps the suppressions visible in code review.
+      # The download script writes the binary path to its `executable` output,
+      # which the next step invokes. The version is pinned as the script's
+      # first argument so the bump shows up in code review. Note that
+      # Dependabot does not track versions embedded in run scripts, so this
+      # one gets bumped by hand.
+      #
+      # No config file is committed yet. If actionlint produces noisy findings
+      # we disagree with, add a .github/actionlint.yaml and, under a `paths`
+      # entry keyed by a file glob, give it an `ignore` list of regexes that
+      # match the error messages to filter out. This is the file-based
+      # equivalent of the -ignore flag and keeps the suppressions visible in
+      # code review. Note it filters on the message text, not on rule names,
+      # so there is no switch to turn a whole rule off.
+      - name: Download actionlint
+        id: get_actionlint
+        run: bash <(curl -sSf https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.11
+        shell: bash
+
       - name: Run actionlint
-        uses: rhysd/actionlint@v1
+        run: ${{ steps.get_actionlint.outputs.executable }} -color
+        shell: bash
