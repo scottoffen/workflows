@@ -202,24 +202,27 @@ jobs:
       - name: Build (Release)
         run: dotnet build "${{ inputs.solution-path }}" --no-restore --configuration Release
 
+      # The dotnet test arguments are assembled in a bash array so that the
+      # optional pieces are added as discrete, correctly quoted arguments.
+      # The coverage collector in particular contains a space, so it has to
+      # arrive as a single argument; passing it through an unquoted variable
+      # would word-split it into broken fragments.
       - name: Test
         env:
           TEST_FILTER: ${{ inputs.test-filter }}
-          # --collect:"XPlat Code Coverage" enables the Coverlet collector
-          # bundled with modern test SDKs. Output goes to the TestResults
-          # directory per-project as coverage.cobertura.xml.
-          COVERAGE_ARG: ${{ inputs.upload-coverage && '--collect:"XPlat Code Coverage"' || '' }}
+          UPLOAD_COVERAGE: ${{ inputs.upload-coverage }}
         run: |
+          args=(--no-build --configuration Release --verbosity normal)
           if [ -n "$TEST_FILTER" ]; then
-            dotnet test "${{ inputs.solution-path }}" \
-              --no-build --configuration Release --verbosity normal \
-              --filter "$TEST_FILTER" \
-              $COVERAGE_ARG
-          else
-            dotnet test "${{ inputs.solution-path }}" \
-              --no-build --configuration Release --verbosity normal \
-              $COVERAGE_ARG
+            args+=(--filter "$TEST_FILTER")
           fi
+          if [ "$UPLOAD_COVERAGE" = "true" ]; then
+            # --collect:"XPlat Code Coverage" enables the Coverlet collector
+            # bundled with modern test SDKs. Output goes to the TestResults
+            # directory per-project as coverage.cobertura.xml.
+            args+=(--collect:"XPlat Code Coverage")
+          fi
+          dotnet test "${{ inputs.solution-path }}" "${args[@]}"
 
       # Upload coverage to Codecov. The action discovers cobertura.xml
       # files automatically under TestResults/. fail_ci_if_error: false
@@ -227,7 +230,7 @@ jobs:
       # fail the build, since the package artifacts are still valid.
       - name: Upload coverage to Codecov
         if: inputs.upload-coverage
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
@@ -268,8 +271,8 @@ jobs:
             echo "Either add NUGET_API_KEY to the caller's 'secrets:' block, or use 'secrets: inherit'."
             exit 1
           fi
-          dotnet nuget push 'artifacts/*.nupkg'  --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY"
-          dotnet nuget push 'artifacts/*.snupkg' --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY"
+          dotnet nuget push 'artifacts/*.nupkg'  --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate
+          dotnet nuget push 'artifacts/*.snupkg' --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate
 
       # Tag and release only when NuGet accepted the package. These steps
       # represent "this commit is on NuGet.org" and doing them on a failed
