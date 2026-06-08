@@ -230,7 +230,7 @@ jobs:
       # fail the build, since the package artifacts are still valid.
       - name: Upload coverage to Codecov
         if: inputs.upload-coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
