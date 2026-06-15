@@ -283,7 +283,7 @@ jobs:
         id: get_version
         working-directory: ${{ inputs.artifacts-search-root }}
         run: |
-          version=$(dotnet nbgv get-version -v NuGetPackageVersion)
+          version=$(nbgv get-version -v NuGetPackageVersion)
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Version to tag: $version"
 
