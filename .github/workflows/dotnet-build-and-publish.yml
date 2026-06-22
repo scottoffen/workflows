@@ -114,7 +114,7 @@ jobs:
     steps:
       - name: Checkout
         if: inputs.check-paths
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -161,7 +161,7 @@ jobs:
       # Full history is required for Nerdbank.GitVersioning to compute the
       # version height. Shallow clones produce wrong or unstable versions.
       - name: Checkout (full history for NBGV)
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -230,7 +230,7 @@ jobs:
       # fail the build, since the package artifacts are still valid.
       - name: Upload coverage to Codecov
         if: inputs.upload-coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
