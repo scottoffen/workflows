@@ -35,7 +35,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # rhysd/actionlint does not publish a `uses:` action, so we run the
       # binary via the project's download script, which is the approach it
