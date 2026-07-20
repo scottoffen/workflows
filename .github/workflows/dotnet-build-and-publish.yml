@@ -267,17 +267,32 @@ jobs:
       # Push to GitHub Packages. --skip-duplicate makes manual re-runs
       # idempotent: re-triggering on the same commit will not fail when the
       # same version already exists in the registry.
+      #
+      # Files are expanded by bash and pushed one at a time, rather than
+      # handing dotnet nuget push a quoted glob like 'artifacts/*.nupkg' to
+      # resolve internally. On Windows runners (Git Bash invoking a native
+      # dotnet.exe), that internal glob resolution has been observed to
+      # fail with "File does not exist" even though the files are present,
+      # confirmed immediately beforehand by the Stage packages step's own
+      # ls. Expanding here sidesteps that entirely, since it's the same
+      # glob mechanism find already used successfully above. nullglob makes
+      # a non-matching pattern contribute zero iterations instead of
+      # leaving the literal, unexpanded pattern behind.
       - name: Push to GitHub Packages
         if: inputs.push-github
         env:
           GITHUB_PACKAGES_URL: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
           GH_PACKAGES_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          dotnet nuget push 'artifacts/*.nupkg'  --source "$GITHUB_PACKAGES_URL" --api-key "$GH_PACKAGES_TOKEN" --skip-duplicate
-          dotnet nuget push 'artifacts/*.snupkg' --source "$GITHUB_PACKAGES_URL" --api-key "$GH_PACKAGES_TOKEN" --skip-duplicate
+          shopt -s nullglob
+          for f in artifacts/*.nupkg artifacts/*.snupkg; do
+            dotnet nuget push "$f" --source "$GITHUB_PACKAGES_URL" --api-key "$GH_PACKAGES_TOKEN" --skip-duplicate
+          done
 
       # Push to NuGet.org. No --skip-duplicate: NuGet rejects republishes of
       # the same version anyway, and we want the failure to be loud.
+      # Same per-file expansion as the GitHub Packages push above, and for
+      # the same reason.
       - name: Push to NuGet.org
         id: nuget_push
         if: inputs.push-nuget
@@ -289,8 +304,10 @@ jobs:
             echo "Either add NUGET_API_KEY to the caller's 'secrets:' block, or use 'secrets: inherit'."
             exit 1
           fi
-          dotnet nuget push 'artifacts/*.nupkg'  --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate
-          dotnet nuget push 'artifacts/*.snupkg' --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate
+          shopt -s nullglob
+          for f in artifacts/*.nupkg artifacts/*.snupkg; do
+            dotnet nuget push "$f" --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate
+          done
 
       # Tag and release only when NuGet accepted the package. These steps
       # represent "this commit is on NuGet.org" and doing them on a failed
