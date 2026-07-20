@@ -11,6 +11,9 @@
 #   - push-nuget:   push the built packages to NuGet.org. When true, a
 #                   successful push also creates a git tag and a GitHub
 #                   Release.
+#   - runs-on:      runner label for the build job. Defaults to
+#                   ubuntu-latest; callers can pass windows-latest,
+#                   macos-latest, or a self-hosted label instead.
 #
 # The preflight is a separate job so that, when it decides not to build,
 # the build job is skipped rather than running and short-circuiting. A
@@ -31,6 +34,12 @@ on:
         required: false
         type: string
         default: '10.0.x'
+
+      runs-on:
+        description: 'Runner label for the build job (e.g. ubuntu-latest, windows-latest, macos-latest, or a self-hosted label)'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
 
       check-paths:
         description: 'If true, run the preflight gate and only build when relevant files changed'
@@ -144,7 +153,7 @@ jobs:
     name: Build, Test, and Publish
     needs: preflight
     if: needs.preflight.outputs.should-run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on }}
 
     # When the caller passes an environment name, GitHub applies that
     # environment's protection rules (required reviewers, branch
@@ -156,6 +165,15 @@ jobs:
     permissions:
       contents: write    # for tagging and creating releases on NuGet publish
       packages: write    # for pushing to GitHub Packages
+
+    # All run steps below use bash-only syntax (arrays, find -exec, [ ]
+    # tests). Windows runners default to pwsh, which would break them, so
+    # shell is pinned to bash here. Both windows-latest and macos-latest
+    # GitHub-hosted images ship bash, so this holds regardless of the
+    # runs-on input.
+    defaults:
+      run:
+        shell: bash
 
     steps:
       # Full history is required for Nerdbank.GitVersioning to compute the
