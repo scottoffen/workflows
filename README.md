@@ -21,10 +21,6 @@ This repository is public because GitHub requires a personal-account reusable wo
   - [First-time Pages setup in the consuming repo](#first-time-pages-setup-in-the-consuming-repo)
   - [Why `concurrency` and `permissions` aren't inputs](#why-concurrency-and-permissions-arent-inputs)
 - [Stale workflow](#stale-workflow)
-- [Versioning](#versioning)
-  - [What counts as breaking](#what-counts-as-breaking)
-  - [Cutting a new version](#cutting-a-new-version)
-  - [A note on SHA pinning](#a-note-on-sha-pinning)
 - [License](#license)
 
 ## What's in here
@@ -181,7 +177,7 @@ The reusable workflow's job needs to declare which environment it's deploying to
 # in publish.yml
 jobs:
   publish:
-    uses: scottoffen/workflows/.github/workflows/dotnet-build-and-publish.yml@v0
+    uses: scottoffen/workflows/.github/workflows/dotnet-build-and-publish.yml@main
     with:
       # ... existing inputs ...
       environment: nuget-org   # only set this when push-nuget might be true
@@ -213,6 +209,7 @@ The protection is real but narrow: it blocks workflow runs on unapproved branche
 |---|---|---|---|
 | `solution-path` | string | (required) | Path to the `.sln` file. |
 | `dotnet-version` | string | `10.0.x` | SDK version for `actions/setup-dotnet`. |
+| `runs-on` | string | `ubuntu-latest` | Runner label for the build job. Override for `windows-latest`, `macos-latest`, or a self-hosted label. The job pins `shell: bash` for its run steps regardless, since the scripts use bash-only syntax; both Windows and macOS GitHub-hosted images ship bash. |
 | `check-paths` | boolean | `false` | Run the preflight gate and only build when relevant files changed. Set to `true` for PR builds; leave `false` for push and manual runs. |
 | `include-paths` | string | `src/**` | Multi-line glob list of paths that count as relevant changes. |
 | `ignore-paths` | string | `**/*.md` | Multi-line glob list of paths to ignore even if they match `include-paths`. |
@@ -298,73 +295,6 @@ Treating any of these as inputs would invite misconfiguration without enabling a
 | `exempt-pr-labels` | string | `pinned,security,work in progress` | Comma-separated labels that exempt a PR from staling. |
 
 The stale label applied to flagged items is hardcoded to `stale` for both issues and PRs so there's only one place to look. Stale and close messages are also hardcoded to keep tone consistent across repos.
-
----
-
-## Versioning
-
-Three tiers of tags, with different mutability:
-
-| Tag form | Mutability | Points at | Use when |
-|---|---|---|---|
-| `@v1.2.3` | Immutable | One specific commit, forever | I want a fully reproducible pin and accept manual update cost. |
-| `@v1` | Moves within v1 | Latest commit in the v1 line; frozen the moment v2 is cut | I want non-breaking updates within a major and want to opt into breaking changes manually. |
-| `@v0` | Always moves | Latest commit overall, across every major | I want every update automatically and accept that breaking changes can land without warning. |
-
-The example callers in this repo use `@v0`. That's the right pin for my consuming projects: same owner on both sides of the call, so a breaking change is something I'd fix the same day I cut it. If a consuming repo ever needs stability over convenience (a long-lived release branch, say), its `uses:` line moves to `@v1` or an exact `@v1.2.3`.
-
-### What counts as breaking
-
-- Renaming, removing, or changing the type of an input.
-- Removing or renaming a declared secret.
-- Changing the default value of an input in a way that changes behavior for existing callers (e.g. flipping a default from `false` to `true`).
-- Renaming the job inside a reusable workflow in a way that breaks required-status-check names on consuming repos.
-
-Adding a new optional input with a backward-compatible default is **not** breaking and ships as a minor version bump within the current major.
-
-### Cutting a new version
-
-For non-breaking changes (new optional input, bug fix, internal refactor) while v1 is the current major:
-
-```bash
-# from main, after the change is merged
-git tag -a v1.2.0 -m "Add foo input"
-git push origin v1.2.0
-
-# fast-forward the major tag
-git tag -fa v1 -m "v1 -> v1.2.0"
-git push origin v1 --force
-
-# fast-forward the always-latest tag
-git tag -fa v0 -m "v0 -> v1.2.0"
-git push origin v0 --force
-```
-
-For breaking changes (cutting a new major):
-
-```bash
-# cut the new major
-git tag -a v2.0.0 -m "Breaking: rename solution-path input"
-git push origin v2.0.0
-
-# create the new major's moving tag
-git tag -a v2 -m "v2 -> v2.0.0"
-git push origin v2
-
-# advance v0 to the new latest
-git tag -fa v0 -m "v0 -> v2.0.0"
-git push origin v0 --force
-```
-
-After a major bump, leave `v1` frozen where it is. Callers pinned to `@v1` keep working unchanged. Callers pinned to `@v0` immediately pick up the new major and may need their inputs updated; that's the deal they signed up for.
-
-Don't rewrite the history that the moving tags point into; just force-update the tags themselves. GitHub Releases are optional but useful as the place to land release notes for each `vX.Y.Z` tag, and as the trigger for any "we changed something breaking" announcements.
-
-### A note on SHA pinning
-
-The strictest pin is a 40-character commit SHA in the `uses:` line. That's more secure than any tag (since tags can be moved to point at new code), but in this setup the workflows repo and the consuming repos are all owned by the same account, so the trust boundary is identical on both sides. The convenience of `@v0` updating automatically is worth more here than the marginal security benefit of SHA pinning.
-
-If a specific consumer ever needs SHA pinning, `@v0` (or `@v1`) gets replaced with the full SHA. Dependabot can update those automatically when enabled.
 
 ---
 

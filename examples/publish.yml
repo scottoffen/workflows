@@ -42,13 +42,14 @@ concurrency:
 
 jobs:
   publish:
-    uses: scottoffen/workflows/.github/workflows/dotnet-build-and-publish.yml@v0
+    uses: scottoffen/workflows/.github/workflows/dotnet-build-and-publish.yml@main
     permissions:
       contents: write    # tag and create release
       packages: write
     with:
       solution-path: src/Polymorph.sln
       dotnet-version: 10.0.x
+      runs-on: ubuntu-latest
       check-paths: false
       # On push events, github.event.inputs.* is empty, so the != / ==
       # comparisons produce the same defaults the manual form declares.
