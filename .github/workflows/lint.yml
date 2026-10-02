@@ -4,12 +4,11 @@
 # workflow does not fail at merge time; it fails when a downstream consumer
 # next runs the workflow, which could be days later and in a repo whose
 # owner is not watching the build queue. actionlint catches the common
-# classes of mistake before the PR lands here, so v0 never advances onto a
+# classes of mistake before the PR lands here, so main never advances onto a
 # broken commit.
 #
 # Triggers on every PR (gating mechanism) and on workflow_dispatch (for
-# ad-hoc reruns and for sanity-checking after force-updating the moving
-# tags).
+# ad-hoc reruns).
 name: Lint workflows
 
 on:

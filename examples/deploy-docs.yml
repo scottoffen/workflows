@@ -18,7 +18,7 @@ on:
 
 jobs:
   deploy:
-    uses: scottoffen/workflows/.github/workflows/docusaurus-deploy-pages.yml@v0
+    uses: scottoffen/workflows/.github/workflows/docusaurus-deploy-pages.yml@main
     permissions:
       contents: read
       pages: write

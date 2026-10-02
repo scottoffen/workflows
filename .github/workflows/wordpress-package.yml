@@ -1,0 +1,129 @@
+# Reusable workflow: package every WordPress theme and plugin in a repo.
+#
+# The consuming repo supplies its own PowerShell packaging script (by
+# default scripts/wordpress-package.ps1). This workflow checks the repo out, runs that
+# script, and uploads every zip it wrote to dist/ as a single artifact. It
+# does not publish or deploy anything; a release or deploy workflow can pick
+# the artifact up later.
+#
+# The caller controls behavior with inputs:
+#
+#   - script-path:    where the packaging script lives in the consuming repo.
+#   - runs-on:        runner label for the job. Defaults to ubuntu-latest;
+#                     the script uses only .NET, so windows-latest and
+#                     macos-latest work too. Every run step pins shell: pwsh,
+#                     which all GitHub-hosted images ship.
+#   - suffix:         text appended to every zip name. When empty, pull
+#                     request runs get pr-<number> and every other event
+#                     gets no suffix, so a PR build can never be mistaken
+#                     for a build from main.
+#   - artifact-name:  name of the uploaded artifact. Artifact names must be
+#                     unique within a run, so change it if the same run
+#                     calls this workflow more than once.
+#   - retention-days: how long GitHub keeps the artifact.
+#
+# Values from inputs and the event payload reach the shell through env vars,
+# never by interpolating them into the script text, so a crafted branch name
+# or input cannot run as code.
+name: WordPress Package (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      script-path:
+        description: 'Path to the PowerShell packaging script, relative to the repo root'
+        required: false
+        type: string
+        default: './scripts/wordpress-package.ps1'
+
+      runs-on:
+        description: 'Runner label for the job (e.g. ubuntu-latest, windows-latest, macos-latest, or a self-hosted label)'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+
+      suffix:
+        description: 'Text appended to every zip name. Overrides the automatic pr-<number> label on pull requests'
+        required: false
+        type: string
+        default: ''
+
+      artifact-name:
+        description: 'Name of the artifact the zips are uploaded as'
+        required: false
+        type: string
+        default: 'packages'
+
+      retention-days:
+        description: 'Number of days to keep the artifact'
+        required: false
+        type: number
+        default: 14
+
+jobs:
+  package:
+    name: Package
+    runs-on: ${{ inputs.runs-on }}
+
+    # Reading the repo is all this job needs. Nothing here pushes, tags, or
+    # writes back, so the token is limited to contents: read.
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Pull request runs label their zips with the PR number. The event
+      # name and PR number come from the caller's event, because a reusable
+      # workflow sees the github context of the workflow that called it.
+      - name: Work out the zip suffix
+        id: suffix
+        shell: pwsh
+        env:
+          INPUT_SUFFIX: ${{ inputs.suffix }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          $suffix = $env:INPUT_SUFFIX
+          if (-not $suffix -and $env:EVENT_NAME -eq 'pull_request') {
+              $suffix = "pr-$($env:PR_NUMBER)"
+          }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "value=$suffix"
+
+      # -Clean empties dist/ first so the artifact only ever holds zips from
+      # this run. The script exits non-zero if it packages nothing, which
+      # fails the job instead of uploading an empty artifact.
+      - name: Build the zips
+        shell: pwsh
+        env:
+          SCRIPT_PATH: ${{ inputs.script-path }}
+          SUFFIX: ${{ steps.suffix.outputs.value }}
+        run: |
+          $parameters = @{ Clean = $true }
+          if ($env:SUFFIX) {
+              $parameters['Suffix'] = $env:SUFFIX
+          }
+          & $env:SCRIPT_PATH @parameters
+
+      # A small table on the run page, so the zip names and sizes are
+      # visible without downloading the artifact.
+      - name: Summarize the zips
+        shell: pwsh
+        run: |
+          $lines = @('## Packages', '', '| Zip | Size |', '| --- | --- |')
+          foreach ($zip in Get-ChildItem -Path dist -Filter '*.zip' | Sort-Object Name) {
+              $lines += "| $($zip.Name) | $([math]::Round($zip.Length / 1KB, 1)) KB |"
+          }
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $lines
+
+      # Artifacts download as a zip, so the package zips end up inside
+      # another zip. Uploading without that wrapper only works for a single
+      # file, and the number of packages here is not fixed.
+      - name: Upload the zips
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention-days }}

@@ -13,7 +13,7 @@ on:
 
 jobs:
   stale:
-    uses: scottoffen/workflows/.github/workflows/stale.yml@v0
+    uses: scottoffen/workflows/.github/workflows/stale.yml@main
     # All defaults are reasonable for a typical OSS project. Override only
     # if this repo needs different timing or different exemption labels,
     # e.g.:

@@ -1,0 +1,43 @@
+# Package WordPress themes and plugins. Delegates to the shared reusable
+# workflow.
+#
+# Builds an installable zip for every folder under src/ by running
+# scripts/wordpress-package.ps1 from this repo (copy it from the scripts/
+# folder of the workflows repo to get started), then uploads them all as one
+# artifact named 'packages'.
+#
+# Pull request builds label each zip with the PR number, for example
+# greenthumb-theme-0.1.0-pr-12.zip. Builds from main are not labeled, so the
+# two can never be confused.
+#
+# The trigger has no path filter on purpose, for the same reason the .NET PR
+# build has none: branch protection treats a missing required check as
+# "pending" indefinitely, and this check is a good candidate to require.
+name: Package
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel any in-progress run for the same PR (or branch) when a new commit
+# lands. Only the latest commit's zips are interesting.
+concurrency:
+  group: package-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    uses: scottoffen/workflows/.github/workflows/wordpress-package.yml@main
+    permissions:
+      contents: read
+    # All defaults suit a repo with scripts/wordpress-package.ps1 at the root
+    # and one package per folder under src/, so most repos need no 'with:'
+    # block at all. Add inputs only if this repo deviates, e.g.:
+    #
+    # with:
+    #   script-path: ./build/wordpress-package.ps1
+    #   artifact-name: wordpress-zips
+    #   retention-days: 30

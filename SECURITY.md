@@ -31,6 +31,5 @@ fix prioritized based on severity.
 
 ## Supported versions
 
-Only the current `v0` (latest) and the current major (`v1`, `v2`, etc.)
-moving tags are supported. Older majors are frozen and will not receive
-fixes; consumers pinned to them should upgrade.
+These workflows are not versioned. Callers reference them at `@main`, and
+fixes are made there.
