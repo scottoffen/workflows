@@ -2,9 +2,19 @@
 #
 # The consuming repo supplies its own PowerShell packaging script (by
 # default scripts/wordpress-package.ps1). This workflow checks the repo out, runs that
-# script, and uploads every zip it wrote to dist/ as a single artifact. It
-# does not publish or deploy anything; a release or deploy workflow can pick
-# the artifact up later.
+# script, and uploads every zip it wrote to dist/ as a single artifact.
+#
+# By default it also creates a draft GitHub Release. When draft-release is
+# true, the run is on the default branch and is not a pull request, the
+# script wrote exactly one zip, and the tag for that zip's Version header
+# does not exist yet, the zip is attached to a draft release for that tag.
+# The release stays a draft so the release notes can be edited before it is
+# published.
+# Nothing else is published or deployed; a release or deploy workflow can
+# pick the artifact up later.
+#
+# Pull request runs label each zip with pr-<number>, and every other event
+# gets no label, so a PR build can never be mistaken for a build from main.
 #
 # The caller controls behavior with inputs:
 #
@@ -13,14 +23,17 @@
 #                     the script uses only .NET, so windows-latest and
 #                     macos-latest work too. Every run step pins shell: pwsh,
 #                     which all GitHub-hosted images ship.
-#   - suffix:         text appended to every zip name. When empty, pull
-#                     request runs get pr-<number> and every other event
-#                     gets no suffix, so a PR build can never be mistaken
-#                     for a build from main.
 #   - artifact-name:  name of the uploaded artifact. Artifact names must be
 #                     unique within a run, so change it if the same run
 #                     calls this workflow more than once.
 #   - retention-days: how long GitHub keeps the artifact.
+#   - draft-release:  create a draft release as described above. The caller's
+#                     job must grant contents: write, because a reusable
+#                     workflow cannot request more access than its caller
+#                     grants. GitHub checks that before it decides which
+#                     jobs run, so the grant is needed even when this is
+#                     false. Defaults to true; set it to false to turn
+#                     draft releases off.
 #
 # Values from inputs and the event payload reach the shell through env vars,
 # never by interpolating them into the script text, so a crafted branch name
@@ -42,12 +55,6 @@ on:
         type: string
         default: 'ubuntu-latest'
 
-      suffix:
-        description: 'Text appended to every zip name. Overrides the automatic pr-<number> label on pull requests'
-        required: false
-        type: string
-        default: ''
-
       artifact-name:
         description: 'Name of the artifact the zips are uploaded as'
         required: false
@@ -60,10 +67,24 @@ on:
         type: number
         default: 14
 
+      draft-release:
+        description: 'Create a draft GitHub Release when a run on the default branch packages exactly one theme or plugin and the version tag does not exist yet. Set to false to turn this off. The caller must grant contents: write either way'
+        required: false
+        type: boolean
+        default: true
+
 jobs:
   package:
     name: Package
     runs-on: ${{ inputs.runs-on }}
+
+    # What the draft release job needs to know about the run: how many
+    # packages were written and, when there is exactly one, its name and the
+    # version from its Version header.
+    outputs:
+      count: ${{ steps.build.outputs.count }}
+      package: ${{ steps.build.outputs.package }}
+      version: ${{ steps.build.outputs.version }}
 
     # Reading the repo is all this job needs. Nothing here pushes, tags, or
     # writes back, so the token is limited to contents: read.
@@ -81,12 +102,11 @@ jobs:
         id: suffix
         shell: pwsh
         env:
-          INPUT_SUFFIX: ${{ inputs.suffix }}
           EVENT_NAME: ${{ github.event_name }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          $suffix = $env:INPUT_SUFFIX
-          if (-not $suffix -and $env:EVENT_NAME -eq 'pull_request') {
+          $suffix = ''
+          if ($env:EVENT_NAME -eq 'pull_request') {
               $suffix = "pr-$($env:PR_NUMBER)"
           }
           Add-Content -Path $env:GITHUB_OUTPUT -Value "value=$suffix"
@@ -94,17 +114,29 @@ jobs:
       # -Clean empties dist/ first so the artifact only ever holds zips from
       # this run. The script exits non-zero if it packages nothing, which
       # fails the job instead of uploading an empty artifact.
+      #
+      # -PassThru makes the script return one object per zip, which is how
+      # the package count and the Version header reach the draft release job.
+      # The script reports everything else with Write-Host and Write-Warning,
+      # so only those objects are captured.
       - name: Build the zips
+        id: build
         shell: pwsh
         env:
           SCRIPT_PATH: ${{ inputs.script-path }}
           SUFFIX: ${{ steps.suffix.outputs.value }}
         run: |
-          $parameters = @{ Clean = $true }
+          $parameters = @{ Clean = $true; PassThru = $true }
           if ($env:SUFFIX) {
               $parameters['Suffix'] = $env:SUFFIX
           }
-          & $env:SCRIPT_PATH @parameters
+          $results = @(& $env:SCRIPT_PATH @parameters | Where-Object { $_.PSObject.Properties['Package'] })
+
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "count=$($results.Count)"
+          if ($results.Count -eq 1) {
+              Add-Content -Path $env:GITHUB_OUTPUT -Value "package=$($results[0].Package)"
+              Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$($results[0].Version)"
+          }
 
       # A small table on the run page, so the zip names and sizes are
       # visible without downloading the artifact.
@@ -117,8 +149,9 @@ jobs:
           }
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $lines
 
-      # Artifacts download as a zip, so the package zips end up inside
-      # another zip. Uploading without that wrapper only works for a single
+      # GitHub delivers every artifact as a zip when it is downloaded from
+      # the run page, so the package zips end up inside an outer zip. That
+      # outer zip can only be skipped for an artifact that holds a single
       # file, and the number of packages here is not fixed.
       - name: Upload the zips
         uses: actions/upload-artifact@v7
@@ -127,3 +160,100 @@ jobs:
           path: dist/*.zip
           if-no-files-found: error
           retention-days: ${{ inputs.retention-days }}
+
+  # Creates a draft release for a repo that ships a single theme or plugin.
+  # The release is a draft on purpose: publishing it creates the tag, and
+  # until then the release notes can be edited. Several packages in one repo
+  # would need one tag each, which this job does not attempt, so it only runs
+  # when exactly one package was written.
+  #
+  # Pull requests never create releases, and neither does any branch other
+  # than the default branch. The event name and branch come from the caller's
+  # event, because a reusable workflow sees the github context of the
+  # workflow that called it.
+  draft-release:
+    name: Draft release
+    needs: package
+    if: ${{ inputs.draft-release && github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch && needs.package.outputs.count == '1' }}
+    runs-on: ${{ inputs.runs-on }}
+
+    # Creating a release is the one thing here that writes to the repo, so
+    # this job asks for contents: write and the package job does not.
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download the zip
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: dist
+
+      # A run that finds nothing to release is not a failure: pushing to the
+      # default branch without changing the Version header is normal, so each
+      # reason to skip is reported in the job summary and the step succeeds.
+      #
+      # An existing release for the tag also counts, drafts included, because
+      # a draft does not create its tag until it is published. Without that
+      # check, every push would add another draft for the same version.
+      - name: Create the draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PACKAGE: ${{ needs.package.outputs.package }}
+          VERSION: ${{ needs.package.outputs.version }}
+        run: |
+          $version = ("$env:VERSION").Trim() -replace '^[vV]', ''
+          $tag = "v$version"
+          $reason = $null
+
+          if (-not $version) {
+              $reason = "The $env:PACKAGE package has no Version header, so there is no version to release."
+          }
+          elseif ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$') {
+              $reason = "The version '$version' is not three numbers with an optional suffix, such as 1.2.3 or 1.2.3-beta.1."
+          }
+          else {
+              gh api "repos/$env:GH_REPO/git/ref/tags/$tag" --silent 2>$null
+              if ($LASTEXITCODE -eq 0) {
+                  $reason = "The tag $tag already exists."
+              }
+              else {
+                  $existing = @(gh api --paginate "repos/$env:GH_REPO/releases?per_page=100" --jq '.[].tag_name')
+                  if ($LASTEXITCODE -ne 0) {
+                      Write-Host '::error::Could not list the existing releases.'
+                      exit 1
+                  }
+                  if ($existing -contains $tag) {
+                      $reason = "A release for $tag already exists, possibly as a draft."
+                  }
+              }
+          }
+
+          if ($reason) {
+              Write-Host "::notice::Draft release skipped. $reason"
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value @('### Draft release skipped', '', $reason)
+              exit 0
+          }
+
+          $zips = @(Get-ChildItem -Path dist -Filter '*.zip')
+          if ($zips.Count -ne 1) {
+              Write-Host "::error::Expected one zip in the artifact but found $($zips.Count)."
+              exit 1
+          }
+
+          $arguments = @($tag, $zips[0].FullName, '--draft', '--title', $tag, '--generate-notes', '--target', $env:GITHUB_SHA)
+          if ($version.Contains('-')) {
+              $arguments += '--prerelease'
+          }
+
+          $url = gh release create @arguments
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "::error::Could not create the draft release for $tag."
+              exit 1
+          }
+
+          Write-Host "Created draft release $tag at $url"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value @("### Draft release created for $tag", '', "Edit the release notes, then publish the release: $url")
+          exit 0

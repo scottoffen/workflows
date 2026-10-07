@@ -214,11 +214,12 @@ jobs:
         run: dotnet format "${{ inputs.solution-path }}" --verify-no-changes --no-restore
 
       # Release configuration so what we test matches what we ship.
-      # GeneratePackageOnBuild=true in the consuming project's
-      # Directory.Build.props means .nupkg and .snupkg files are produced as
-      # a side effect of this step; no separate dotnet pack is needed.
-      - name: Build (Release)
-        run: dotnet build "${{ inputs.solution-path }}" --no-restore --configuration Release
+      # dotnet pack builds the solution first and then produces the .nupkg
+      # and .snupkg files for every packable project, so no separate
+      # dotnet build step is needed. The test step below reuses these build
+      # outputs through --no-build.
+      - name: Build and pack (Release)
+        run: dotnet pack "${{ inputs.solution-path }}" --no-restore --configuration Release
 
       # The dotnet test arguments are assembled in a bash array so that the
       # optional pieces are added as discrete, correctly quoted arguments.

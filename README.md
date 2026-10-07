@@ -34,13 +34,13 @@ This repository is public because GitHub requires a personal-account reusable wo
 
 | Category | Name | File | Purpose |
 |---|---|---|---|
-| .NET | [Build and Publish](#build-and-publish) | `.github/workflows/dotnet-build-and-publish.yml` | Restore, build, test, and optionally push to GitHub Packages and/or NuGet.org. Tags and creates a GitHub Release on a successful NuGet push. |
+| .NET | [Build and Publish](#build-and-publish) | `.github/workflows/dotnet-build-and-publish.yml` | Restore, build, pack, test, and optionally push to GitHub Packages and/or NuGet.org. Tags and creates a GitHub Release on a successful NuGet push. |
 | .NET | [Cleanup Packages](#cleanup-packages) | `.github/workflows/dotnet-cleanup-packages.yml` | Delete prerelease versions from GitHub Packages, either all of them or those older than N days. Never touches release versions. |
 | Docusaurus | [Docusaurus Deploy](#docusaurus-deploy) | `.github/workflows/docusaurus-deploy-pages.yml` | Build a Docusaurus site and deploy it to GitHub Pages. |
 | PHP | [PHP Tests](#php-tests) | `.github/workflows/php-tests.yml` | Run a PHP package's tests with Composer on a matrix of PHP versions. |
 | PHP | [PHP Release](#php-release) | `.github/workflows/php-release.yml` | Check the version, run the PHP tests on the exact commit, then create the tag and the GitHub Release for a package published on Packagist. |
 | WordPress | [WordPress Packaging Script](#wordpress-packaging-script) | `scripts/wordpress-package.ps1` | PowerShell script that builds an installable zip for every theme and plugin under `src/`. It runs the same way locally and in CI. |
-| WordPress | [WordPress Package](#wordpress-package) | `.github/workflows/wordpress-package.yml` | Run the repo's packaging script in CI and upload the zips it writes as one artifact. Pull request builds label each zip with the PR number. |
+| WordPress | [WordPress Package](#wordpress-package) | `.github/workflows/wordpress-package.yml` | Run the repo's packaging script in CI and upload the zips it writes as one artifact. Pull request builds label each zip with the PR number. Also creates a draft GitHub Release for a repo that ships a single theme or plugin. |
 | Repository hygiene | [Stale](#stale) | `.github/workflows/stale.yml` | Mark and close stale issues and pull requests on a schedule. |
 
 The `examples/` directory contains ready-to-copy caller templates for each workflow. The `scripts/` directory contains the scripts that the workflows rely on. When a workflow expects a script to exist in each consuming repo, the copy here is the template to start from. The section for each workflow describes the scripts it needs.
@@ -92,11 +92,11 @@ A workflow trigger can include a path filter, such as running only when files un
 
 ## .NET Workflows
 
-Two workflows cover the .NET build, publish, and cleanup cycle: [Build and Publish](#build-and-publish) and [Cleanup Packages](#cleanup-packages). Both use secrets, described in [.NET Secrets](#net-secrets). The [.NET Setup](#net-setup) section is the procedure for wiring a new repo.
+Two workflows cover the .NET build, publish, and cleanup cycle: [Build and Publish](#build-and-publish) and [Cleanup Packages](#cleanup-packages). Both use secrets, described in [.NET Secrets](#net-secrets). The [.NET Setup](#net-setup) section is the procedure for wiring up a new repo.
 
 ### Build and Publish
 
-Restores, builds, and tests a solution. It can push the resulting packages to GitHub Packages and/or NuGet.org. A successful NuGet push also creates a git tag and a GitHub Release.
+Restores, builds, packs, and tests a solution. It can push the resulting packages to GitHub Packages and/or NuGet.org. A successful NuGet push also creates a git tag and a GitHub Release.
 
 #### Inputs
 
@@ -109,10 +109,10 @@ Restores, builds, and tests a solution. It can push the resulting packages to Gi
 | `include-paths` | string | `src/**` | Multi-line glob list of paths that count as relevant changes. |
 | `ignore-paths` | string | `**/*.md` | Multi-line glob list of paths to ignore even if they match `include-paths`. |
 | `artifacts-search-root` | string | `src` | Directory under which to find produced `.nupkg` and `.snupkg` files. |
-| `test-filter` | string | `Category!=Integration` | Value passed to `dotnet test --filter`. An empty string runs all tests. |
+| `test-filter` | string | `Category!=Integration` | Value passed to `dotnet test --filter`. Leave empty to run all tests. |
 | `push-github` | boolean | `false` | Push the built packages to GitHub Packages. |
 | `push-nuget` | boolean | `false` | Push to NuGet.org. On a successful push, creates a git tag and a GitHub Release. |
-| `environment` | string | `''` | Optional environment name. Leave empty for repository secrets. Set to a name such as `nuget-org` to use environment-scoped secrets and protection rules. See [.NET Secrets](#net-secrets). |
+| `environment` | string | `''` | Name of the GitHub environment that the build job runs in, such as `nuget-org`. The job reads `NUGET_API_KEY` from the secrets stored in that environment. Any protection rules configured on the environment also apply. For example, if the environment requires reviewers, the run waits for approval in the Actions UI before the job starts. Leave empty to run without an environment, in which case the key is read from the repository secrets. See [.NET Secrets](#net-secrets). |
 | `verify-format` | boolean | `false` | Run `dotnet format --verify-no-changes` as a gate before build. Opt-in: enabling it on a codebase that has never been formatted fails every PR until `dotnet format` is run locally and the result committed. |
 | `upload-coverage` | boolean | `false` | Collect coverage during `dotnet test` and upload to Codecov. Requires a one-time Codecov signup for the consuming repo. Public repos can upload tokenless. Private repos need `CODECOV_TOKEN` set. |
 
@@ -121,19 +121,17 @@ Restores, builds, and tests a solution. It can push the resulting packages to Gi
 The workflow assumes a layout that matches the OSS .NET conventions in use across these projects. The consuming repo must meet the following requirements:
 
 - **A solution file.** The solution file exists somewhere under the repo, at the path given by the `solution-path` input.
-- **A `Directory.Build.props` file.** The file sits at the solution root with `GeneratePackageOnBuild=true` and `TreatWarningsAsErrors=true`. Packages are produced as a side effect of `dotnet build`, and no separate `dotnet pack` runs.
-- **Nerdbank.GitVersioning.** [Nerdbank.GitVersioning](https://github.com/dotnet/Nerdbank.GitVersioning) is configured at the solution root. The publish path uses `dotnet nbgv get-version` to derive the tag name.
-- **No `global.json`.** The solution root has no `global.json`, because the workflow installs the SDK specified by the `dotnet-version` input regardless of any `global.json` present. If a consuming repo adds a `global.json`, either remove it or align it with the input value to avoid "SDK not found" errors.
-- **A test discriminator on integration tests.** The discriminator is needed only when integration tests should be excluded from the gate. The default `test-filter` is `Category!=Integration`, and an empty string runs everything.
+- **Nerdbank.GitVersioning.** [Nerdbank.GitVersioning](https://github.com/dotnet/Nerdbank.GitVersioning) is set up so that package versions are computed during the build. This means that the projects that produce packages reference the Nerdbank.GitVersioning package, either in each project file or in a `Directory.Build.props` file, and that a `version.json` file exists in the repo. When the workflow tags a release, it runs `nbgv get-version` from the directory given by the `artifacts-search-root` input. That command looks for `version.json` in that directory and in each directory above it, so the file can live at the solution root, in the source directory, or anywhere in between.
+- **An optional test discriminator.** A discriminator is needed only when some tests should be excluded from the CI run. The default `test-filter` is `Category!=Integration`. Leave `test-filter` empty to run all tests.
 
 #### Preflight and Branch Protection
 
-Branch protection on `main` requires a `build` status check. The build workflow has no path filter on its trigger, so it runs on every PR, which satisfies branch protection. Inside the workflow, a preflight job decides whether the build job actually runs. When the preflight says no, the build job is skipped, and a skipped job reports as success to branch protection. Documentation-only PRs pass without rebuilding.
+Branch protection on `main` requires a `build` status check. The build workflow has no path filter on its trigger, so it runs on every PR, which satisfies branch protection. Inside the workflow, a preflight job decides whether the build job actually runs. When the preflight says no, the build job is skipped, and a skipped job reports as success to branch protection. This allows documentation-only PRs to pass without rebuilding.
 
 The following two details apply:
 
 - The required status check name comes from the **caller's** job name, not from anything inside the reusable workflow. The example caller names the job `build`. Renaming it means updating the branch protection rule.
-- `should-run` comes from [scottoffen/should-run](https://github.com/scottoffen/should-run), which uses the Compare API rather than local git. It works correctly on shallow clones.
+- The `include-paths` and `ignore-paths` inputs are passed to [scottoffen/should-run](https://github.com/scottoffen/should-run), which defines the glob syntax they accept.
 
 ### Cleanup Packages
 
@@ -143,11 +141,11 @@ Deletes prerelease versions of NuGet packages from GitHub Packages. Release vers
 
 | Input | Type | Default | Description |
 |---|---|---|---|
-| `package-names` | string | (required) | Multi-line list of NuGet package IDs to sweep, one per line. |
+| `package-names` | string | (required) | Multi-line list of NuGet package IDs to delete prerelease versions from, one per line. |
 | `mode` | string | (required) | `prerelease-only` deletes every prerelease version. `older-than-days` deletes prereleases older than `days` days. |
-| `days` | number | `30` | Only used with `older-than-days`. |
+| `days` | number | `30` | Only used when `mode` is `older-than-days`. Prerelease versions created more than this many days ago are deleted, and newer ones are kept. Ignored when `mode` is `prerelease-only`. |
 | `dry-run` | boolean | `true` | List what would be deleted without actually deleting. |
-| `environment` | string | `''` | Optional environment name. Leave empty for repository secrets. Set to a name such as `package-cleanup` to use environment-scoped secrets and protection rules. See [.NET Secrets](#net-secrets). |
+| `environment` | string | `''` | Name of the GitHub environment that the cleanup job runs in, such as `package-cleanup`. The job reads `PACKAGES_DELETE_TOKEN` from the secrets stored in that environment. Any protection rules configured on the environment also apply. For example, if the environment requires reviewers, the run waits for approval in the Actions UI before the job starts. Leave empty to run without an environment, in which case the token is read from the repository secrets. See [.NET Secrets](#net-secrets). |
 
 ### .NET Secrets
 
@@ -168,18 +166,24 @@ The example callers use `secrets: inherit`, which forwards every secret defined 
 
 On a personal GitHub account, two storage locations are available for Actions secrets: **repository secrets** and **environment secrets**. There is no account-level shared store for Actions. That is an organization feature. Each consuming repo needs its own copy of each secret either way.
 
-Repository secrets are the default for a solo maintainer. Environment secrets add gates designed for teams, such as approval reviewers, branch restrictions, and wait timers, which give a single maintainer little protection. The cost is friction on every publish. The team approach is documented below for repos where more than one person can trigger publishes.
+Repository secrets are the default for a solo maintainer. Environment secrets add gates designed for teams, such as approval reviewers, branch restrictions, and wait timers, which provides the single maintainer no value, at the cost of additional friction on every publish. The team approach is documented below for repos where more than one person can trigger publishes.
 
 #### Repository Secrets
 
-Run the following commands for each consuming repo:
+Add the secrets to each consuming repo with the following steps:
 
-```bash
-gh secret set NUGET_API_KEY         --repo scottoffen/<repo>
-gh secret set PACKAGES_DELETE_TOKEN --repo scottoffen/<repo>
-```
+1. Open the repo on GitHub and go to **Settings → Secrets and variables → Actions**.
+2. Select **New repository secret**.
+3. Enter the secret name (`NUGET_API_KEY` or `PACKAGES_DELETE_TOKEN`) and its value, then select **Add secret**.
+4. Repeat for each secret the repo needs.
 
-The CLI prompts for the value, or the value can be piped in. The web UI equivalent is **Settings → Secrets and variables → Actions → New repository secret**.
+> [!NOTE]
+> The same secrets can be set with the GitHub CLI. The CLI prompts for each value, or the value can be piped in.
+>
+> ```bash
+> gh secret set NUGET_API_KEY         --repo scottoffen/<repo>
+> gh secret set PACKAGES_DELETE_TOKEN --repo scottoffen/<repo>
+> ```
 
 #### Environment Secrets
 
@@ -194,12 +198,13 @@ Setup for each repo consists of the following steps:
 2. On each environment, configure protection rules: required reviewers (at least one maintainer) and "Deployment branches" set to `main` only.
 3. Add the secret to the environment rather than the repo: **Settings → Environments → nuget-org → Add secret**, named `NUGET_API_KEY`. Do the same for `PACKAGES_DELETE_TOKEN` under `package-cleanup`.
 
-The CLI equivalent of adding the secrets is as follows:
-
-```bash
-gh secret set NUGET_API_KEY         --repo scottoffen/<repo> --env nuget-org
-gh secret set PACKAGES_DELETE_TOKEN --repo scottoffen/<repo> --env package-cleanup
-```
+> [!NOTE]
+> The secrets in step 3 can also be added with the GitHub CLI.
+>
+> ```bash
+> gh secret set NUGET_API_KEY         --repo scottoffen/<repo> --env nuget-org
+> gh secret set PACKAGES_DELETE_TOKEN --repo scottoffen/<repo> --env package-cleanup
+> ```
 
 The reusable workflow's job must declare which environment it deploys to for the secret to be available. Both the build and cleanup workflows accept an optional `environment` input for this. Set it in the caller, as in the following example:
 
@@ -214,7 +219,7 @@ jobs:
     secrets: inherit
 ```
 
-When the workflow reaches the NuGet push step, GitHub pauses the run and waits for a reviewer to approve in the Actions UI. After approval, the secret is injected and the step runs.
+When the job is ready to start, GitHub pauses the run and waits for a reviewer to approve it in the Actions UI. The environment applies to the whole job, so approval is required before any step runs, including the build and the tests. After approval, the secret is injected and the job runs.
 
 Leave `environment:` unset on the PR build caller. PR builds do not push to NuGet and do not need a gate.
 
@@ -231,18 +236,23 @@ The protection is real but narrow. It blocks workflow runs on unapproved branche
 
 ### .NET Setup
 
-This procedure assumes the repo already exists on GitHub with source code, a solution file, `Directory.Build.props`, and Nerdbank.GitVersioning configured. Substitute the new repo name for `<repo>` throughout. Repos that do not publish documentation or use the stale workflow can skip those setups. See [Docusaurus Deploy](#docusaurus-deploy) and [Stale](#stale).
+This procedure assumes the repo already exists on GitHub with source code and a solution file, and that it meets the requirements listed under [Requirements in the Consuming Repo](#requirements-in-the-consuming-repo). Substitute the new repo name for `<repo>` throughout. Repos that do not publish documentation or use the stale workflow can skip those setups. See [Docusaurus Deploy](#docusaurus-deploy) and [Stale](#stale).
 
 #### 1. Copy the Caller Templates
 
-```bash
-gh repo clone scottoffen/<repo>
-cd <repo>
-mkdir -p .github/workflows
+Copy `pr-build.yml`, `publish.yml`, and `cleanup.yml` from the `examples/` directory of this repository into `.github/workflows/` in the consuming repo. Create the directory if it does not exist.
 
-# from a local clone of scottoffen/workflows
-cp /path/to/workflows/examples/{pr-build,publish,cleanup}.yml .github/workflows/
-```
+> [!NOTE]
+> The same can be done from the command line, using a local clone of this repository.
+>
+> ```bash
+> gh repo clone scottoffen/<repo>
+> cd <repo>
+> mkdir -p .github/workflows
+>
+> # from a local clone of scottoffen/workflows
+> cp /path/to/workflows/examples/{pr-build,publish,cleanup}.yml .github/workflows/
+> ```
 
 #### 2. Edit the Inputs
 
@@ -253,46 +263,58 @@ Open each copied workflow and update the project-specific values. Most edits are
 
 #### 3. Add the Secrets
 
-```bash
-gh secret set NUGET_API_KEY         --repo scottoffen/<repo>
-gh secret set PACKAGES_DELETE_TOKEN --repo scottoffen/<repo>
-```
+Add `NUGET_API_KEY` and `PACKAGES_DELETE_TOKEN` as repository secrets. The steps, including the CLI commands, are described under [Repository Secrets](#repository-secrets).
 
 `GITHUB_TOKEN` is auto-provisioned and needs no setup. See [.NET Secrets](#net-secrets) for environment-scoped alternatives.
 
-#### 4. Set Branch Protection
+#### 4. Commit and Push
 
-```bash
-gh api -X PUT "repos/scottoffen/<repo>/branches/main/protection" \
-  --input - <<'EOF'
-{
-  "required_status_checks": {
-    "strict": true,
-    "contexts": ["build"]
-  },
-  "enforce_admins": false,
-  "required_pull_request_reviews": null,
-  "restrictions": null
-}
-EOF
-```
+Commit the new workflow files and push them to `main`.
 
-The `"build"` context name must match the job key in `pr-build.yml`. If the job was renamed, the context must be renamed to match.
+> [!NOTE]
+> From a local clone, the commands are as follows.
+>
+> ```bash
+> git add .github/workflows/
+> git commit -m "Add CI workflows"
+> git push
+> ```
 
-#### 5. Commit and Push
-
-```bash
-git add .github/workflows/
-git commit -m "Add CI workflows"
-git push
-```
-
-#### 6. Verify
+#### 5. Verify
 
 1. Open a throwaway PR with any small change under `src/` and confirm the `build` check runs and passes.
 2. Merge to `main` and confirm the publish workflow pushes the branch package to GitHub Packages. Both steps should complete with no manual intervention.
 
 The first NuGet.org publish is manual: **Actions → Publish → Run workflow → push to NuGet.org: true**. Subsequent publishes follow the same pattern.
+
+#### 6. Set Branch Protection (Optional)
+
+Branch protection is optional. Set it up only after the workflows have run at least once, so that the check names exist and can be selected exactly as they appear. Set up branch protection for `main` with the following steps:
+
+1. In the consuming repo, go to **Settings → Branches** and add a branch protection rule for `main`.
+2. Enable **Require status checks to pass before merging**, and enable **Require branches to be up to date before merging**.
+3. Search for the check reported by the PR build workflow, which is `build` in the example caller, and add it as a required status check.
+4. Leave the other options off and save the rule.
+
+> [!NOTE]
+> The same rule can be created with the GitHub CLI. Replace `build` with the check name exactly as it appears on a pull request.
+>
+> ```bash
+> gh api -X PUT "repos/scottoffen/<repo>/branches/main/protection" \
+>   --input - <<'EOF'
+> {
+>   "required_status_checks": {
+>     "strict": true,
+>     "contexts": ["build"]
+>   },
+>   "enforce_admins": false,
+>   "required_pull_request_reviews": null,
+>   "restrictions": null
+> }
+> EOF
+> ```
+
+The required check name must match the name shown on a pull request. See [Required Status Checks](#required-status-checks).
 
 ---
 
@@ -325,8 +347,11 @@ Treating any of these as inputs would invite misconfiguration without enabling a
 #### Setup
 
 1. Copy `examples/deploy-docs.yml` to `.github/workflows/deploy-docs.yml` in the consuming repo. No changes are usually needed. Set `docs-path` only if Docusaurus lives somewhere other than `docs/`.
-2. In the repo's web UI, set **Settings → Pages → Source: GitHub Actions**. Without this, the first deploy fails with an error that does not clearly point at the source setting.
+2. If GitHub Pages has not been set up for the repo before, set it up now. The note below describes how.
 3. Push to `main` and confirm the deploy succeeds.
+
+> [!IMPORTANT]
+> GitHub Pages must be set up to deploy from GitHub Actions before the first deploy runs. This is a one-time step for each repo, and the workflow does not change this setting. In the repo, go to **Settings → Pages** and set **Source** to **GitHub Actions**. Without it, the first deploy fails with an error that does not clearly point at the source setting.
 
 The first deploy creates a `github-pages` environment automatically. It does not need to be created manually, and it appears under **Settings → Environments** after the first successful run.
 
@@ -394,16 +419,9 @@ The following three jobs run in order:
 2. **Tests.** Calls [PHP Tests](#php-tests) on the same commit.
 3. **Create the release.** Skipped on a dry run. Creates the `v<version>` tag at that commit and a GitHub Release with generated notes, marked as a pre-release when the version has a suffix. The release link is written to the job summary.
 
-#### Caller Responsibilities
-
-A reusable workflow cannot define the form shown on the Actions tab, so the caller owns the `workflow_dispatch` trigger and its fields and passes the values in. The following two settings also stay in the caller:
-
-- **`concurrency`.** The caller's group prevents two releases from running at once, and is set to never cancel a release that is already running.
-- **`permissions`.** The caller's job must grant `contents: write`. Inside this workflow, only the job that creates the release gets it. The others stay on `contents: read`.
-
 #### Requirements
 
-- **A Packagist package with a working webhook.** Packagist watches the repo for new tags. If a new version does not appear on the package page after a couple of minutes, use the Update button there.
+- **A public repository and a Packagist package with a working webhook.** Packagist only lists public repositories, and it watches the repo for new tags. If a new version does not appear on the package page after a couple of minutes, use the Update button there. See [PACKAGIST.md](PACKAGIST.md) for the one-time setup.
 - **No `version` key in `composer.json`.** Packagist takes versions from Git tags, and the check fails the run if it finds one.
 - **A test command.** The same requirement as [PHP Tests](#php-tests).
 
@@ -440,7 +458,7 @@ The default paths are resolved relative to the folder that contains the script, 
 
 #### Usage
 
-The following commands show the common ways to run the script:
+The following commands show the common ways to run the script from a PowerShell prompt:
 
 ```powershell
 # Package everything under src into dist
@@ -450,10 +468,18 @@ The following commands show the common ways to run the script:
 ./scripts/wordpress-package.ps1 -Name example-theme -Clean
 
 # Add a pull request label to every zip name
-./scripts/wordpress-package.ps1 -Suffix "pr-$env:PR_NUMBER"
+./scripts/wordpress-package.ps1 -Suffix pr-12
 ```
 
-Run `Get-Help ./scripts/wordpress-package.ps1 -Full` for the complete reference.
+The commands above only work when the current shell is PowerShell. From the Windows Command Prompt, or from any other shell that is not PowerShell, start the script through PowerShell by prefixing the command with `pwsh`, as in the following example:
+
+```bat
+pwsh ./scripts/wordpress-package.ps1 -Name example-theme -Clean
+```
+
+The `pwsh` command starts PowerShell 7. The script also runs on Windows PowerShell 5.1, which is started with `powershell` instead of `pwsh`.
+
+Run `Get-Help ./scripts/wordpress-package.ps1 -Full` in a PowerShell prompt for the complete reference.
 
 #### Package Requirements
 
@@ -485,7 +511,7 @@ A small set of files is always left out: operating system and editor files, vers
 
 ### WordPress Package
 
-Runs the packaging script in CI and uploads every zip it writes as a single artifact. The workflow contains no packaging logic of its own. It calls the [WordPress Packaging Script](#wordpress-packaging-script) and expects to find it at `./scripts/wordpress-package.ps1` in the consuming repo. The `script-path` input points the workflow at a different location. The workflow does not publish or deploy anything. A release or deploy workflow can pick the artifact up later.
+Runs the packaging script in CI and uploads every zip it writes as a single artifact. The workflow contains no packaging logic of its own. It calls the [WordPress Packaging Script](#wordpress-packaging-script) and expects to find it at `./scripts/wordpress-package.ps1` in the consuming repo. The `script-path` input points the workflow at a different location. The workflow also creates a draft GitHub Release for a repo that ships a single theme or plugin, as described under [Draft Release](#draft-release). It does not publish or deploy anything else, so a release or deploy workflow can pick the artifact up later.
 
 #### Inputs
 
@@ -493,33 +519,53 @@ Runs the packaging script in CI and uploads every zip it writes as a single arti
 |---|---|---|---|
 | `script-path` | string | `./scripts/wordpress-package.ps1` | Path to the packaging script, relative to the repo root. |
 | `runs-on` | string | `ubuntu-latest` | Runner label for the job. The script uses only .NET, so `windows-latest` and `macos-latest` also work. The job pins `shell: pwsh` for its run steps, which every GitHub-hosted image ships. |
-| `suffix` | string | `''` | Text appended to every zip name. Overrides the automatic pull request label. |
 | `artifact-name` | string | `packages` | Name of the uploaded artifact. Artifact names must be unique within a run, so change it if one run calls this workflow more than once. |
 | `retention-days` | number | `14` | How long GitHub keeps the artifact. |
+| `draft-release` | boolean | `true` | Create a draft GitHub Release when a run on the default branch packages exactly one theme or plugin and the version tag does not exist yet. Set to `false` to turn this off. The calling job must grant `contents: write` either way. See [Draft Release](#draft-release). |
 
 #### How It Works
 
-The workflow runs the following steps in order:
+The package job runs the following steps in order:
 
 1. The workflow checks out the repo.
-2. The workflow works out the zip suffix. A pull request run gets `pr-<number>`, any other event gets none, and the `suffix` input overrides both.
-3. The workflow runs the script with `-Clean`, which empties `dist/` first so the artifact holds only zips from this run, and with `-Suffix` when a suffix applies. The script exits with an error when it packages nothing, so an empty build fails the job.
+2. The workflow works out the zip suffix. A pull request run gets `pr-<number>`, and any other event gets none.
+3. The workflow runs the script with `-Clean`, which empties `dist/` first so the artifact holds only zips from this run, with `-Suffix` when a suffix applies, and with `-PassThru`, which makes the script return one object per zip, with `Package` and `Version` properties. The workflow uses those objects to read back how many packages were written and, for a single package, its name and version. The script exits with an error when it packages nothing, so an empty build fails the job.
 4. The workflow writes a table of zip names and sizes to the job summary.
 5. The workflow uploads `dist/*.zip` as the artifact, and fails if there is nothing to upload.
 
-The job needs only `contents: read`. The example caller sets that explicitly.
+The package job needs only `contents: read`. The draft release job is the only job that writes to the repo.
 
-The script must write its zips to `dist/` at the repo root and accept the `-Clean` and `-Suffix` parameters. The template in this repository's `scripts/` folder does both. See [Package Requirements](#package-requirements) for what the script expects of each package folder.
+The script must write its zips to `dist/` at the repo root. The workflow decides which parameters it passes to the script, and the caller cannot change them, so a script at a custom `script-path` has to accept the same parameters as the template in this repository's `scripts/` folder. See [Package Requirements](#package-requirements) for what the script expects of each package folder.
+
+#### Draft Release
+
+Unless `draft-release` is set to `false`, the workflow runs a second job after the package job. The job creates a draft GitHub Release when all of the following conditions are met:
+
+1. The run is on the default branch and is not a pull request.
+2. The packaging script wrote exactly one zip, which means the repo ships a single theme or plugin.
+3. The package has a `Version` header made of three numbers with an optional suffix, such as `1.2.3` or `1.2.3-beta.1`. A leading `v` is ignored.
+4. Neither the tag `v<version>` nor any release for that tag exists yet. Drafts count, because a draft does not create its tag until it is published.
+
+If the first two conditions are not met, the job does not run. If the last two are not met, the job runs, creates nothing, and records the reason in the job summary. That is not a failure, because pushing to the default branch without changing the version is normal.
+
+When all of the conditions are met, the job creates a draft release named `v<version>` with the zip attached and with generated release notes as a starting point. A version with a suffix is marked as a pre-release. The release is a draft so that the notes can be edited before the release is public. Publishing the draft creates the tag at the commit the workflow ran on.
+
+The calling job must grant `contents: write`, because a reusable workflow cannot request more access than its caller grants. GitHub checks this before it decides which jobs run, so the grant is required even when `draft-release` is `false`. A caller that grants only `contents: read` fails at startup with no jobs. Only the draft release job uses the write access.
 
 #### The Artifact
 
-GitHub downloads an artifact as a zip, so the package zips arrive inside another zip. Uploading them unwrapped works only for a single file, and the number of packages is not fixed. If the wrapper becomes a problem, the alternative is a matrix with one upload per package.
+The zips are uploaded together as one artifact. GitHub delivers every artifact as a zip file when it is downloaded from the run page, so the download is a zip that contains the package zips. The outer zip can only be skipped for an artifact that holds a single file, and a repo can have any number of packages, so the workflow always accepts the outer zip.
+
+The outer zip only affects manual downloads from the run page. The [draft release](#draft-release) attaches the package zip itself, so the release asset is the installable theme or plugin zip.
+
+If the outer zip becomes a problem, the alternative is to upload each package as its own artifact, using a matrix with one upload per package.
 
 #### Setup
 
 1. Copy `scripts/wordpress-package.ps1` from this repository to `scripts/wordpress-package.ps1` in the consuming repo, and copy `examples/wordpress-package.yml` to `.github/workflows/`.
-2. Check that each package folder under `src/` has the header the script looks for. Run `./scripts/wordpress-package.ps1` locally to see what it picks up.
+2. Check that each package folder under `src/` has the header the script looks for. Run the script locally, as described under Usage in [WordPress Packaging Script](#wordpress-packaging-script), to see what it picks up.
 3. Open a throwaway PR and confirm the `package` check runs, the job summary lists the zips, and the artifact downloads.
+4. Make sure the calling job grants `contents: write`, which the example caller already does. The grant is needed even when draft releases are turned off. To turn them off, set `draft-release: false` in the caller's `with:` block.
 
 The caller has no path filter, so it is safe to make `package` a required status check. As with the other workflows, the required check name is derived from the **caller's** job name.
 

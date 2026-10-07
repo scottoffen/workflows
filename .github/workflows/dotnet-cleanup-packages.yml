@@ -2,7 +2,7 @@
 #
 # This is the same cleanup logic as the per-repo version, parameterized on
 # the list of package names. The caller decides which packages this run
-# should sweep.
+# should clean up.
 #
 # Release versions (no prerelease segment, e.g. 1.2.3) are NEVER deleted
 # regardless of mode. Only versions whose name contains a '-' character
