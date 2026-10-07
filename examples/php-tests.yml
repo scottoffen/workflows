@@ -1,0 +1,35 @@
+# Tests for a PHP package. Delegates to the shared reusable workflow.
+#
+# Runs composer test on every supported PHP version, on pushes to main and on
+# every pull request. The release workflow runs the same matrix before it
+# tags anything.
+#
+# The trigger has no path filter on purpose: branch protection treats a
+# missing required check as "pending" indefinitely, and these checks are good
+# candidates to require. The check names look like "tests / PHP 8.4", which
+# is this job's key followed by the reusable workflow's job name.
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    uses: scottoffen/workflows/.github/workflows/php-tests.yml@main
+    permissions:
+      contents: read
+    # All defaults suit a package with a "test" script in composer.json that
+    # supports PHP 8.1 through 8.4, so most repos need no 'with:' block at
+    # all. Add inputs only if this repo deviates, e.g.:
+    #
+    # with:
+    #   php-versions: '["8.2","8.3","8.4"]'
+    #   test-command: composer run-script test:ci
+    #
+    # If you change php-versions here, change it in the release workflow too,
+    # so a release is gated on the same matrix a pull request gets.

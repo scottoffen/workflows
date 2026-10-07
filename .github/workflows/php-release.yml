@@ -1,0 +1,208 @@
+# Reusable workflow: release a PHP package that is published on Packagist.
+#
+# It checks the version, runs the tests on the exact commit it will release,
+# then creates the tag and the GitHub release. Packagist picks the new tag up
+# through its webhook, so there is nothing to push to Packagist from here.
+#
+# The caller supplies the trigger, normally workflow_dispatch, because a
+# reusable workflow cannot define the form that shows up on the Actions tab.
+# The caller also owns concurrency, and its job must grant contents: write,
+# because a reusable workflow cannot give itself more access than the job
+# that calls it.
+#
+# The caller controls behavior with inputs:
+#
+#   - version:       version to release, like 0.1.0 or 1.0.0-beta.1. A leading
+#                    v is fine. A suffix after a dash makes it a pre-release.
+#   - dry-run:       run every check, but do not create the release.
+#   - php-version:   PHP version used to validate composer.json. Defaults to
+#                    the newest supported version.
+#   - php-versions:  JSON array of PHP versions the tests run on. Passed
+#                    through to the PHP tests workflow, so keep the default
+#                    in step with that file.
+#   - test-command:  command that runs the tests. Passed through to the PHP
+#                    tests workflow.
+#   - runs-on:       runner label for every job. Defaults to ubuntu-latest.
+#                    Every run step pins shell: bash, which all GitHub-hosted
+#                    images ship.
+#
+# Values from inputs and the event payload reach the shell through env vars,
+# never by interpolating them into the script text, so a crafted input cannot
+# run as code. The github context here is the caller's, so the default branch
+# and the ref are the ones from the repo being released.
+name: PHP Release (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version to release, like 0.1.0 or 1.0.0-beta.1 (a leading v is fine)'
+        required: true
+        type: string
+
+      dry-run:
+        description: 'Run every check, but do not create the release'
+        required: false
+        type: boolean
+        default: false
+
+      php-version:
+        description: 'PHP version used to validate composer.json'
+        required: false
+        type: string
+        default: '8.4'
+
+      php-versions:
+        description: 'JSON array of PHP versions the tests run on (e.g. ["8.2","8.3"])'
+        required: false
+        type: string
+        default: '["8.1","8.2","8.3","8.4"]'
+
+      test-command:
+        description: 'Command that runs the tests'
+        required: false
+        type: string
+        default: 'composer test'
+
+      runs-on:
+        description: 'Runner label for the jobs (e.g. ubuntu-latest, windows-latest, macos-latest, or a self-hosted label)'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check the version
+    runs-on: ${{ inputs.runs-on }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check the version
+        id: version
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+
+          if [[ "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]]; then
+            fail "Releases are made from $DEFAULT_BRANCH, but this run is on $GITHUB_REF_NAME."
+          fi
+
+          version="${INPUT_VERSION//[[:space:]]/}"
+          version="${version#[vV]}"
+
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]]; then
+            fail "'$INPUT_VERSION' is not a version. Use three numbers, such as 0.1.0, with an optional suffix such as -beta.1."
+          fi
+
+          tag="v$version"
+
+          if git rev-parse --quiet --verify "refs/tags/$tag" >/dev/null; then
+            fail "The tag $tag already exists."
+          fi
+
+          prerelease=false
+          if [[ "$version" == *-* ]]; then
+            prerelease=true
+          fi
+
+          latest="$(git tag --list 'v[0-9]*' | sed 's/^v//' | grep -v -- '-' | sort -V | tail -n 1 || true)"
+          if [[ "$prerelease" == "false" && -n "$latest" ]]; then
+            highest="$(printf '%s\n%s\n' "$latest" "$version" | sort -V | tail -n 1)"
+            if [[ "$highest" != "$version" ]]; then
+              echo "::warning::$version is lower than the latest release, $latest. That is fine for a backport, but check it is what you meant."
+            fi
+          fi
+
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Releasing $tag from $GITHUB_SHA (pre-release: $prerelease)."
+
+      # Packagist takes versions from Git tags. A "version" key in
+      # composer.json would fight with the tag, so it is not allowed.
+      - name: Make sure composer.json has no version
+        shell: bash
+        run: |
+          if jq -e 'has("version")' composer.json >/dev/null; then
+            echo "::error::composer.json has a \"version\" key. Remove it, because Packagist takes versions from Git tags."
+            exit 1
+          fi
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          tools: composer:v2
+          coverage: none
+
+      - name: Validate composer.json
+        shell: bash
+        run: composer validate --strict
+
+  # Runs the same test matrix a pull request gets, on the commit this run is
+  # about to tag. The shared tests workflow is referenced at @main, like the
+  # callers reference this one.
+  tests:
+    name: Tests
+    needs: check
+    permissions:
+      contents: read
+    uses: scottoffen/workflows/.github/workflows/php-tests.yml@main
+    with:
+      php-versions: ${{ inputs.php-versions }}
+      test-command: ${{ inputs.test-command }}
+      runs-on: ${{ inputs.runs-on }}
+
+  release:
+    name: Create the release
+    needs: [check, tests]
+    if: ${{ !inputs.dry-run }}
+    runs-on: ${{ inputs.runs-on }}
+    permissions:
+      contents: write
+    steps:
+      - name: Create the tag and the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.check.outputs.tag }}
+          PRERELEASE: ${{ needs.check.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+
+          args=(--target "$GITHUB_SHA" --title "$TAG" --generate-notes)
+
+          if [[ "$PRERELEASE" == "true" ]]; then
+            args+=(--prerelease)
+          fi
+
+          url="$(gh release create "$TAG" "${args[@]}")"
+
+          echo "Created $url"
+          {
+            echo "### Released $TAG"
+            echo
+            echo "$url"
+          } >> "$GITHUB_STEP_SUMMARY"

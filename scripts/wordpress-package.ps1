@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 
 <#
 .SYNOPSIS
@@ -37,7 +37,7 @@
 
 .PARAMETER Suffix
     Text appended to each zip name, such as pr-12 or a short commit hash. For
-    example, greenthumb-theme-0.1.0-pr-12.zip.
+    example, example-theme-0.1.0-pr-12.zip.
 
 .PARAMETER Clean
     Deletes existing zips in the output directory before packaging.
@@ -51,7 +51,7 @@
     Packages everything under src into dist.
 
 .EXAMPLE
-    ./scripts/wordpress-package.ps1 -Name greenthumb-theme -Clean
+    ./scripts/wordpress-package.ps1 -Name example-theme -Clean
 
     Packages only the theme, after clearing old zips from dist.
 

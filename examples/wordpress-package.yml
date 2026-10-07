@@ -7,7 +7,7 @@
 # artifact named 'packages'.
 #
 # Pull request builds label each zip with the PR number, for example
-# greenthumb-theme-0.1.0-pr-12.zip. Builds from main are not labeled, so the
+# example-theme-0.1.0-pr-12.zip. Builds from main are not labeled, so the
 # two can never be confused.
 #
 # The trigger has no path filter on purpose, for the same reason the .NET PR

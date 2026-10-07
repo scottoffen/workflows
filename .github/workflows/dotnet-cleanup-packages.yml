@@ -33,7 +33,7 @@ on:
         type: number
         default: 30
 
-      dry_run:
+      dry-run:
         description: 'If true, list what would be deleted without actually deleting'
         required: false
         type: boolean
@@ -83,7 +83,7 @@ jobs:
         env:
           MODE: ${{ inputs.mode }}
           DAYS: ${{ inputs.days }}
-          DRY_RUN: ${{ inputs.dry_run }}
+          DRY_RUN: ${{ inputs.dry-run }}
         run: |
           echo "Mode:    $MODE"
           echo "Days:    $DAYS"
@@ -98,7 +98,7 @@ jobs:
           OWNER: ${{ github.repository_owner }}
           MODE: ${{ inputs.mode }}
           DAYS: ${{ inputs.days }}
-          DRY_RUN: ${{ inputs.dry_run }}
+          DRY_RUN: ${{ inputs.dry-run }}
           PACKAGE_NAMES: ${{ inputs.package-names }}
         run: |
           set -euo pipefail

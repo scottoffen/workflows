@@ -123,7 +123,7 @@ jobs:
     steps:
       - name: Checkout
         if: inputs.check-paths
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -179,7 +179,7 @@ jobs:
       # Full history is required for Nerdbank.GitVersioning to compute the
       # version height. Shallow clones produce wrong or unstable versions.
       - name: Checkout (full history for NBGV)
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -294,7 +294,7 @@ jobs:
       # Same per-file expansion as the GitHub Packages push above, and for
       # the same reason.
       - name: Push to NuGet.org
-        id: nuget_push
+        id: nuget-push
         if: inputs.push-nuget
         env:
           NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
@@ -314,8 +314,8 @@ jobs:
       # push would misrepresent reality. outcome == 'success' is stricter
       # than != 'failure' (it also excludes 'skipped' and 'cancelled').
       - name: Get NuGet package version
-        if: steps.nuget_push.outcome == 'success'
-        id: get_version
+        if: steps.nuget-push.outcome == 'success'
+        id: get-version
         working-directory: ${{ inputs.artifacts-search-root }}
         run: |
           version=$(nbgv get-version -v NuGetPackageVersion)
@@ -323,9 +323,9 @@ jobs:
           echo "Version to tag: $version"
 
       - name: Create git tag
-        if: steps.nuget_push.outcome == 'success'
+        if: steps.nuget-push.outcome == 'success'
         env:
-          VERSION: ${{ steps.get_version.outputs.version }}
+          VERSION: ${{ steps.get-version.outputs.version }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -333,10 +333,10 @@ jobs:
           git push origin "v$VERSION"
 
       - name: Create GitHub Release
-        if: steps.nuget_push.outcome == 'success'
+        if: steps.nuget-push.outcome == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.get_version.outputs.version }}
+          VERSION: ${{ steps.get-version.outputs.version }}
         run: |
           gh release create "v$VERSION" \
             --title "v$VERSION" \

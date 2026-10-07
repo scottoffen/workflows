@@ -34,7 +34,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # rhysd/actionlint does not publish a `uses:` action, so we run the
       # binary via the project's download script, which is the approach it
@@ -58,10 +58,10 @@ jobs:
       # code review. Note it filters on the message text, not on rule names,
       # so there is no switch to turn a whole rule off.
       - name: Download actionlint
-        id: get_actionlint
+        id: get-actionlint
         run: bash <(curl -sSf https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.11
         shell: bash
 
       - name: Run actionlint
-        run: ${{ steps.get_actionlint.outputs.executable }} -color
+        run: ${{ steps.get-actionlint.outputs.executable }} -color
         shell: bash
