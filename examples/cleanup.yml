@@ -22,7 +22,7 @@ on:
         required: false
         type: number
         default: 30
-      dry_run:
+      dry-run:
         description: 'If true, lists what would be deleted without actually deleting'
         required: false
         type: boolean
@@ -38,10 +38,10 @@ jobs:
     with:
       mode: ${{ github.event.inputs.mode }}
       days: ${{ fromJSON(github.event.inputs.days) }}
-      dry_run: ${{ github.event.inputs.dry_run == 'true' }}
+      dry-run: ${{ github.event.inputs.dry-run == 'true' }}
       package-names: |
-        Polymorph
-        Polymorph.Abstractions
-        Polymorph.Extensions.DependencyInjection
-        Polymorph.Compatibility.AutoMapper
+        Example
+        Example.Abstractions
+        Example.Extensions.DependencyInjection
+        Example.Compatibility.Adapter
     secrets: inherit

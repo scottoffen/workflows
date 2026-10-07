@@ -1,0 +1,84 @@
+# Reusable workflow: run a PHP package's test suite on a matrix of PHP
+# versions.
+#
+# Each matrix job checks the repo out, sets up one PHP version, installs the
+# dependencies with Composer, and runs the test command. Nothing here
+# publishes or releases anything; the PHP release workflow calls this one to
+# gate a release, and a repo's own tests workflow calls it for pushes and pull
+# requests.
+#
+# The caller controls behavior with inputs:
+#
+#   - php-versions: JSON array of PHP versions to test against, such as
+#                   '["8.2","8.3"]'. It is a JSON string because workflow
+#                   inputs cannot be arrays. The default matches the
+#                   versions the packages in this account support.
+#   - test-command: command that runs the tests. Defaults to composer test,
+#                   so a package only needs a "test" script in composer.json.
+#   - runs-on:      runner label for the jobs. Defaults to ubuntu-latest.
+#                   Every run step pins shell: bash, which all GitHub-hosted
+#                   images ship.
+#
+# Values from inputs reach the shell through env vars, never by interpolating
+# them into the script text.
+name: PHP Tests (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      php-versions:
+        description: 'JSON array of PHP versions to test against (e.g. ["8.2","8.3"])'
+        required: false
+        type: string
+        default: '["8.1","8.2","8.3","8.4"]'
+
+      test-command:
+        description: 'Command that runs the tests'
+        required: false
+        type: string
+        default: 'composer test'
+
+      runs-on:
+        description: 'Runner label for the jobs (e.g. ubuntu-latest, windows-latest, macos-latest, or a self-hosted label)'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+
+jobs:
+  phpunit:
+    name: PHP ${{ matrix.php }}
+    runs-on: ${{ inputs.runs-on }}
+
+    # Reading the repo is all this job needs. Nothing here pushes, tags, or
+    # writes back, so the token is limited to contents: read.
+    permissions:
+      contents: read
+
+    # fail-fast is off so one failing PHP version does not hide the results
+    # for the others.
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ${{ fromJSON(inputs.php-versions) }}
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+
+      - name: Install dependencies
+        shell: bash
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      # The command comes from the caller and may hold more than one word,
+      # so it goes through eval rather than being run as a single program name.
+      - name: Run the tests
+        shell: bash
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: eval "$TEST_COMMAND"

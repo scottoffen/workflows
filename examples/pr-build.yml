@@ -28,7 +28,7 @@ jobs:
       contents: write
       packages: write
     with:
-      solution-path: src/Polymorph.sln
+      solution-path: src/Example.sln
       dotnet-version: 10.0.x
       runs-on: ubuntu-latest
       check-paths: true
@@ -37,7 +37,7 @@ jobs:
       ignore-paths: |
         **/*.md
         src/**Tests/**
-        src/Polymorph.Benchmarks/**
+        src/Example.Benchmarks/**
       push-github: true
       push-nuget: false
     secrets: inherit

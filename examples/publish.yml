@@ -20,15 +20,15 @@ on:
       - 'src/**'
       - '!**/*.md'
       - '!src/**Tests/**'
-      - '!src/Polymorph.Benchmarks/**'
+      - '!src/Example.Benchmarks/**'
   workflow_dispatch:
     inputs:
-      pushGitHub:
+      push-github:
         description: 'Push to GitHub Packages'
         required: false
         default: true
         type: boolean
-      pushNuget:
+      push-nuget:
         description: 'Push to NuGet.org'
         required: false
         default: false
@@ -47,7 +47,7 @@ jobs:
       contents: write    # tag and create release
       packages: write
     with:
-      solution-path: src/Polymorph.sln
+      solution-path: src/Example.sln
       dotnet-version: 10.0.x
       runs-on: ubuntu-latest
       check-paths: false
@@ -59,6 +59,6 @@ jobs:
       # deliberate: the `inputs.x || default` shortcut is unsafe when
       # the user's value is false, because GitHub's || returns the first
       # truthy operand, so false || true would clobber a deliberate false.)
-      push-github: ${{ github.event.inputs.pushGitHub != 'false' }}
-      push-nuget: ${{ github.event.inputs.pushNuget == 'true' }}
+      push-github: ${{ github.event.inputs.push-github != 'false' }}
+      push-nuget: ${{ github.event.inputs.push-nuget == 'true' }}
     secrets: inherit

@@ -1,0 +1,49 @@
+name: Release
+
+# Release for a PHP package published on Packagist. Delegates to the shared
+# reusable workflow.
+#
+# Run this by hand from the Actions tab. It checks the version, runs the tests
+# on the exact commit it will release, then creates the tag and the GitHub
+# release. Packagist picks the new tag up through its webhook.
+#
+# The form fields live here, because a reusable workflow cannot define them.
+# Tick "dry run" to run every check without creating the release.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, like 0.1.0 or 1.0.0-beta.1 (a leading v is fine)'
+        required: true
+        type: string
+      dry-run:
+        description: 'Run every check, but do not create the release'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+# Never cancel a release that is already running. A second run waits for the
+# first to finish, and then fails the tag check if it is the same version.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    uses: scottoffen/workflows/.github/workflows/php-release.yml@main
+    permissions:
+      contents: write    # tag and create release
+    with:
+      version: ${{ inputs.version }}
+      dry-run: ${{ inputs.dry-run }}
+      # All other defaults suit a package that supports PHP 8.1 through 8.4
+      # and has a "test" script in composer.json. Add inputs only if this
+      # repo deviates, e.g.:
+      #
+      # php-versions: '["8.2","8.3","8.4"]'
+      # test-command: composer run-script test:ci
+      #
+      # If you change php-versions here, change it in the tests workflow too.

@@ -7,8 +7,15 @@
 # artifact named 'packages'.
 #
 # Pull request builds label each zip with the PR number, for example
-# greenthumb-theme-0.1.0-pr-12.zip. Builds from main are not labeled, so the
+# example-theme-0.1.0-pr-12.zip. Builds from main are not labeled, so the
 # two can never be confused.
+#
+# When a push to main packages exactly one theme or plugin and the tag for its
+# Version header does not exist yet, this also creates a draft GitHub
+# Release. The release stays a draft so the notes can be edited before it is
+# published. That job writes to the repo, so the calling job below grants
+# contents: write. Set draft-release: false to turn it off. The grant is still
+# needed when it is off, because GitHub checks it before any job runs.
 #
 # The trigger has no path filter on purpose, for the same reason the .NET PR
 # build has none: branch protection treats a missing required check as
@@ -22,17 +29,19 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Cancel any in-progress run for the same PR (or branch) when a new commit
-# lands. Only the latest commit's zips are interesting.
+# Cancel any in-progress run for the same PR when a new commit lands, because
+# only the latest commit's zips are interesting. Runs on main are never
+# cancelled, so a second push cannot interrupt a draft release that is still
+# being created.
 concurrency:
   group: package-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   package:
     uses: scottoffen/workflows/.github/workflows/wordpress-package.yml@main
     permissions:
-      contents: read
+      contents: write    # the draft release job creates the release
     # All defaults suit a repo with scripts/wordpress-package.ps1 at the root
     # and one package per folder under src/, so most repos need no 'with:'
     # block at all. Add inputs only if this repo deviates, e.g.:
@@ -41,3 +50,4 @@ jobs:
     #   script-path: ./build/wordpress-package.ps1
     #   artifact-name: wordpress-zips
     #   retention-days: 30
+    #   draft-release: false
