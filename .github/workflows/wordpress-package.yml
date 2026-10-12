@@ -13,6 +13,11 @@
 # Nothing else is published or deployed; a release or deploy workflow can
 # pick the artifact up later.
 #
+# When a package folder under src/ has a composer.json, the workflow sets up
+# PHP and Composer first, and the packaging script runs composer install in
+# that folder before it zips it, so the zip includes the vendor folder. A repo
+# with no composer.json under src/ skips the PHP setup.
+#
 # Pull request runs label each zip with pr-<number>, and every other event
 # gets no label, so a PR build can never be mistaken for a build from main.
 #
@@ -27,6 +32,8 @@
 #                     unique within a run, so change it if the same run
 #                     calls this workflow more than once.
 #   - retention-days: how long GitHub keeps the artifact.
+#   - php-version:    PHP version used to run Composer. Defaults to 8.4. It
+#                     only matters when a package folder has a composer.json.
 #   - draft-release:  create a draft release as described above. The caller's
 #                     job must grant contents: write, because a reusable
 #                     workflow cannot request more access than its caller
@@ -66,6 +73,12 @@ on:
         required: false
         type: number
         default: 14
+
+      php-version:
+        description: 'PHP version used to run Composer when a package folder has a composer.json'
+        required: false
+        type: string
+        default: '8.4'
 
       draft-release:
         description: 'Create a draft GitHub Release when a run on the default branch packages exactly one theme or plugin and the version tag does not exist yet. Set to false to turn this off. The caller must grant contents: write either way'
@@ -110,6 +123,25 @@ jobs:
               $suffix = "pr-$($env:PR_NUMBER)"
           }
           Add-Content -Path $env:GITHUB_OUTPUT -Value "value=$suffix"
+
+      # The script runs composer install in every package folder that has a
+      # composer.json, so Composer has to be on the PATH. PHP and Composer are
+      # set up only when there is something to install, which keeps the job
+      # fast for a repo that has no Composer packages.
+      - name: Look for Composer packages
+        id: composer
+        shell: pwsh
+        run: |
+          $folders = @(Get-ChildItem -Path src -Directory -ErrorAction SilentlyContinue |
+              Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'composer.json') })
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "count=$($folders.Count)"
+
+      - name: Set up PHP and Composer
+        if: ${{ steps.composer.outputs.count != '0' }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          tools: composer:v2
 
       # -Clean empties dist/ first so the artifact only ever holds zips from
       # this run. The script exits non-zero if it packages nothing, which

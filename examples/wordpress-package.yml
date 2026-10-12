@@ -6,6 +6,11 @@
 # folder of the workflows repo to get started), then uploads them all as one
 # artifact named 'packages'.
 #
+# When a package folder under src/ has a composer.json, the workflow sets up
+# PHP and Composer, and the script runs composer install in that folder before
+# it zips it, so the zip includes the vendor folder. Commit the composer.lock
+# and add src/*/vendor/ to .gitignore.
+#
 # Pull request builds label each zip with the PR number, for example
 # example-theme-0.1.0-pr-12.zip. Builds from main are not labeled, so the
 # two can never be confused.
@@ -50,4 +55,5 @@ jobs:
     #   script-path: ./build/wordpress-package.ps1
     #   artifact-name: wordpress-zips
     #   retention-days: 30
+    #   php-version: '8.3'
     #   draft-release: false

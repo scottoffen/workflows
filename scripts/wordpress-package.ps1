@@ -17,9 +17,18 @@
     zips also unpack correctly on Linux hosts. (Compress-Archive in Windows
     PowerShell 5.1 writes backslashes, which is why it is not used here.)
 
-    The script uses only .NET and runs the same on Windows PowerShell 5.1,
-    PowerShell 7 on Windows, and PowerShell 7 on Linux or macOS, so a GitHub
-    Actions runner can call it directly.
+    The script uses .NET, plus Composer for a package that has a
+    composer.json, and it runs the same on Windows PowerShell 5.1, PowerShell 7
+    on Windows, and PowerShell 7 on Linux or macOS, so a GitHub Actions runner
+    can call it directly.
+
+    When a package folder has a composer.json, the script runs composer install
+    in that folder before it writes the zip, so the zip includes the vendor
+    folder. Composer must be on the PATH. The install uses --no-dev, so
+    development dependencies stay out of the zip. The script warns when the
+    package has no composer.lock, and it stops with an error when Composer is
+    missing or the install fails. A folder that is not a theme or a plugin is
+    skipped before any install runs.
 
     Files can be left out of a package by adding a .distignore file to that
     package's folder. See the Notes section.
@@ -71,6 +80,10 @@
         tests/.
     A small set of files is always left out: operating system and editor
     files, version control files, node_modules, and any .zip files.
+
+    composer.json, composer.lock, and the vendor folder are packaged like any
+    other file. Add /composer.json and /composer.lock to .distignore to leave
+    the two files out.
 #>
 [CmdletBinding()]
 param(
@@ -144,6 +157,30 @@ function Get-PackageInfo {
     }
 
     return $null
+}
+
+function Install-ComposerDependency {
+    <# Runs composer install in a package folder that has a composer.json. #>
+    param([Parameter(Mandatory)][System.IO.DirectoryInfo]$Directory)
+
+    if (-not (Get-Command composer -ErrorAction SilentlyContinue)) {
+        throw "'$($Directory.Name)' has a composer.json, but composer was not found on the PATH. Install Composer from https://getcomposer.org and run the script again."
+    }
+
+    if (-not (Test-Path -LiteralPath (Join-Path $Directory.FullName 'composer.lock'))) {
+        Write-Warning "'$($Directory.Name)' has no composer.lock, so composer will resolve the newest versions that composer.json allows. Commit a composer.lock to make the build repeatable."
+    }
+
+    Write-Host "Running composer install in '$($Directory.Name)'"
+
+    # Out-Host keeps composer's output out of the pipeline, which -PassThru
+    # uses for the package objects.
+    $workingDirectory = $Directory.FullName
+    & composer install "--working-dir=$workingDirectory" --no-dev --no-interaction --no-progress --prefer-dist --optimize-autoloader | Out-Host
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "composer install failed in '$($Directory.Name)' with exit code $LASTEXITCODE."
+    }
 }
 
 function Read-IgnorePattern {
@@ -317,6 +354,10 @@ foreach ($directory in $directories) {
     if ($version) { $zipName += "-$version" }
     if ($Suffix) { $zipName += "-$Suffix" }
     $zipPath = Join-Path $OutputPath "$zipName.zip"
+
+    if (Test-Path -LiteralPath (Join-Path $directory.FullName 'composer.json')) {
+        Install-ComposerDependency -Directory $directory
+    }
 
     $patterns = @($DefaultExcludes) + @(Read-IgnorePattern -PackageRoot $directory.FullName)
     $files = @(Get-PackageFile -Root $directory.FullName -Pattern $patterns)
