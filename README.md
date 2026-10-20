@@ -24,6 +24,7 @@ This repository is public because GitHub requires a personal-account reusable wo
 - [WordPress Workflows](#wordpress-workflows)
   - [WordPress Packaging Script](#wordpress-packaging-script)
   - [WordPress Release](#wordpress-release)
+  - [WordPress Validate](#wordpress-validate)
 - [Repository Hygiene Workflows](#repository-hygiene-workflows)
   - [Stale](#stale)
 - [License](#license)
@@ -41,6 +42,7 @@ This repository is public because GitHub requires a personal-account reusable wo
 | PHP | [PHP Release](#php-release) | `.github/workflows/php-release.yml` | Check the version, run the PHP tests on the exact commit, then create the tag and the GitHub Release for a package published on Packagist. |
 | WordPress | [WordPress Packaging Script](#wordpress-packaging-script) | `scripts/wordpress-package.ps1` | PowerShell script that validates every theme and plugin under `src/`, builds an installable zip for each one, and runs Composer first for a package that has a `composer.json`. It can write a given version into each package's `Version` header inside the zip. It runs the same way locally and in CI. |
 | WordPress | [WordPress Release](#wordpress-release) | `.github/workflows/wordpress-release.yml` | Run the tests, package every theme and plugin under `src/` with a new version, and create a draft GitHub Release with the zips attached. The workflow is run by hand. The version is a major, minor, or patch bump of the highest stable version among the tags and releases, or a custom value. |
+| WordPress | [WordPress Validate](#wordpress-validate) | `.github/workflows/wordpress-validate.yml` | Build every theme and plugin under `src/` with the packaging script, without creating a release, so the build is checked on pull requests before a change is merged. |
 | Repository hygiene | [Stale](#stale) | `.github/workflows/stale.yml` | Mark and close stale issues and pull requests on a schedule. |
 
 The `examples/` directory contains ready-to-copy caller templates for each workflow. The `scripts/` directory contains the scripts that the workflows rely on. When a workflow expects a script to exist in each consuming repo, the copy here is the template to start from. The section for each workflow describes the scripts it needs.
@@ -435,13 +437,13 @@ The following three jobs run in order:
 
 ## WordPress Workflows
 
-WordPress packaging has two parts. The [WordPress Packaging Script](#wordpress-packaging-script) builds the zips and runs the same way on a developer machine and in CI. The [WordPress Release](#wordpress-release) workflow runs the tests, calls that script with a new version, and creates a draft GitHub Release with the zips attached.
+WordPress packaging has three parts. The [WordPress Packaging Script](#wordpress-packaging-script) builds the zips and runs the same way on a developer machine and in CI. The [WordPress Release](#wordpress-release) workflow runs the tests, calls that script with a new version, and creates a draft GitHub Release with the zips attached. The [WordPress Validate](#wordpress-validate) workflow calls the same script on pull requests, so the build is checked before a change is merged.
 
 All packages in a repo are released together with one version. A repo with one theme or plugin is the same case with one package.
 
 ### WordPress Packaging Script
 
-The script `scripts/wordpress-package.ps1` packages every WordPress theme and plugin under `src/` into an installable zip. It uses .NET, plus Composer for a package that has a `composer.json`, and it runs the same on Windows PowerShell 5.1, PowerShell 7 on Windows, and PowerShell 7 on Linux or macOS. Repository owners run it locally to build the same zips that CI produces, and the [WordPress Release](#wordpress-release) workflow calls it.
+The script `scripts/wordpress-package.ps1` packages every WordPress theme and plugin under `src/` into an installable zip. It uses .NET, plus Composer for a package that has a `composer.json`, and it runs the same on Windows PowerShell 5.1, PowerShell 7 on Windows, and PowerShell 7 on Linux or macOS. Repository owners run it locally to build the same zips that CI produces, and the [WordPress Release](#wordpress-release) and [WordPress Validate](#wordpress-validate) workflows call it.
 
 The script is kept in each consuming repo, so the same file runs locally and in CI. The cost is one copy of the script per repo, and the copies can drift apart. The copy in this repository's `scripts/` folder is the template to start from.
 
@@ -641,7 +643,49 @@ The calling repo must meet the following requirements:
 > gh workflow run release.yml --repo scottoffen/<repo> -f bump=custom -f custom-version=1.0.0
 > ```
 
-The example caller runs only when it is started by hand, so it produces no status checks for pull requests.
+The example caller runs only when it is started by hand, so it produces no status checks for pull requests. Use [WordPress Validate](#wordpress-validate) for a check that runs on pull requests.
+
+### WordPress Validate
+
+Builds every theme and plugin under `src/` the way [WordPress Release](#wordpress-release) does, without creating a release. A repo's own validate workflow calls it on pull requests and pushes, so the build is checked before a change is merged. A `composer.json` that cannot be installed, a Composer script that exits with an error, or a header that is missing or does not match causes the check to fail here, before a release is started.
+
+The workflow calls the [WordPress Packaging Script](#wordpress-packaging-script) with the fixed version `0.1.0`. A version turns the script's warnings about the `Version` and `Text Domain` headers into errors, as described under [Validation](#validation), so a package that could not be released also causes this workflow to fail. The script writes the zips to `dist` on the runner, and the workflow discards them. The workflow does not upload an artifact or commit anything.
+
+#### Inputs
+
+| Input | Type | Default | Description |
+|---|---|---|---|
+| `php-versions` | string | `["8.1","8.2","8.3","8.4"]` | JSON array of PHP versions. Workflow inputs cannot be arrays, so the value is a JSON string. Composer runs on the lowest version in the array. The default is the same as the default of [PHP Tests](#php-tests) and [WordPress Release](#wordpress-release). |
+| `runs-on` | string | `ubuntu-latest` | Runner label for the job. Every run step sets `shell: pwsh`, which is installed on GitHub-hosted runner images. |
+
+Two values are fixed and have no input. The packaging script must be at `./scripts/wordpress-package.ps1`, and the version that it is called with is `0.1.0`.
+
+#### How It Works
+
+The workflow has one job, named `Build`. The job runs the following steps in order:
+
+1. The job selects the PHP version for Composer, which is the lowest entry in `php-versions`.
+2. The job checks out the repo.
+3. The job sets up PHP and Composer when a package folder under `src/` has a `composer.json`.
+4. The job runs the packaging script with `-Version 0.1.0`. The script validates every package before it writes anything, and it exits with an error when a check fails, when Composer fails, or when it packages nothing.
+
+The job requires only `contents: read`.
+
+#### Requirements
+
+The calling repo must meet the following requirements:
+
+- The packaging script must be at `scripts/wordpress-package.ps1`. The copy in this repository's `scripts/` folder is the template to start from.
+- Each package folder under `src/` must pass the checks that the script runs with `-Version`, which are described under [Validation](#validation).
+- A package that has a `composer.json` must meet the requirements under [Composer Dependencies](#composer-dependencies).
+
+#### Setup
+
+1. Copy `examples/wordpress-validate.yml` to `.github/workflows/validate.yml` in the consuming repo.
+2. Open a throwaway pull request and confirm that the `validate / Build` check appears and passes.
+3. Add `validate / Build` to the required status checks of the branch protection rule for the default branch, as described under [Required Status Checks](#required-status-checks).
+
+The example caller has no path filter, so the check is safe to require. The check name is built from the **caller's** job key and the job name in this workflow. Renaming the job key in the caller changes the name, and the branch protection rule must change with it.
 
 ---
 
