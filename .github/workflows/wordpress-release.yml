@@ -1,0 +1,447 @@
+# Reusable workflow: package and release WordPress themes and plugins.
+#
+# The workflow runs the repo's tests, builds an installable zip for every
+# theme and plugin under src/, and creates a draft GitHub Release for the new
+# version with every zip attached. All packages in the repo get the same
+# version. A repo with one package is the same case with one zip.
+#
+# The workflow does not change the Version headers in the repo. The packaging
+# script writes the new version into the headers inside each zip, and nothing
+# is committed back to the repo. The release is a draft, so the release notes
+# can be edited before it is published. Publishing the draft creates the tag,
+# and the tag points at the commit that the tests ran against.
+#
+# The workflow runs four jobs in order. When a job fails, the jobs after it do
+# not run:
+#
+#   - check:   fails when a run that is not a dry run is on a branch other
+#              than the default branch, calculates the new version, fails when
+#              a tag or a release already exists for it, and runs the
+#              packaging script with -ValidateOnly.
+#   - tests:   calls the PHP tests workflow on the commit being released.
+#              Skipped when skip-tests is true.
+#   - package: runs Composer for packages that have a composer.json, builds the
+#              zips with the new version, and uploads them as one artifact.
+#   - release: creates the draft release. Skipped when dry-run is true.
+#
+# The new version is calculated from the highest stable version among the
+# repo's tags and releases, drafts included, such as v1.2.3 or 1.2.3. Versions
+# with a suffix, such as 1.2.3-beta.1, are ignored. When the repo has no stable
+# version yet, major, minor, and patch all produce 0.1.0.
+#
+# A reusable workflow cannot define the form on the Actions tab, so the caller
+# supplies the trigger, normally workflow_dispatch. The caller also sets
+# concurrency, and its job must grant contents: write. A reusable workflow
+# cannot give itself more access than the job that calls it, and GitHub checks
+# the permissions before it evaluates any job condition, so the grant is
+# required even for a dry run. The check job uses it to list draft releases,
+# which cannot be seen with a token with only contents: read.
+#
+# The caller controls behavior with inputs:
+#
+#   - bump:           major, minor, patch, or custom. The first three increase
+#                     that part of the base version and reset the parts after
+#                     it. custom uses custom-version as it is.
+#   - custom-version: the version to use when bump is custom, such as 1.0.0 or
+#                     1.0.0-beta.1, without a leading v. It is ignored for the
+#                     other bump values. It must be greater than the base
+#                     version, and a suffix on the base version, such as
+#                     1.2.3-beta.1 when the base is 1.2.3, does not make it
+#                     greater.
+#   - dry-run:        run every job except release. The zips are still
+#                     uploaded as an artifact, so they can be inspected. A dry
+#                     run can be started from any branch.
+#   - skip-tests:     skip the tests job. The package and release jobs still
+#                     run.
+#   - php-versions:   JSON array of PHP versions that the tests run on, such as
+#                     '["8.2","8.3"]'. Composer runs on the lowest version in
+#                     the array. The default is the same as the default of the
+#                     PHP tests workflow.
+#   - runs-on:        runner label for every job. Defaults to ubuntu-latest.
+#                     Every run step sets shell: pwsh, which is installed on
+#                     GitHub-hosted runner images, and the release steps use
+#                     the gh CLI, which is included in the same runner image.
+#
+# The tests run composer test from the repo root, so the calling repo must have
+# a test script in its composer.json. The calling repo must also have the
+# packaging script at ./scripts/wordpress-package.ps1. The zips are uploaded as
+# an artifact named packages that is kept for 14 days.
+#
+# Values from inputs and the event payload are passed to the shell through env
+# vars, never by interpolating them into the script text, so a crafted input
+# cannot run as code. The github context here is the caller's, so the event,
+# the branch, and the commit are the ones from the repo being released.
+name: WordPress Release (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      bump:
+        description: 'The part of the version to increase: major, minor, patch, or custom'
+        required: true
+        type: string
+
+      custom-version:
+        description: 'Custom version value'
+        required: false
+        type: string
+        default: ''
+
+      dry-run:
+        description: 'Run every job except release, and upload the zips as an artifact'
+        required: false
+        type: boolean
+        default: false
+
+      skip-tests:
+        description: 'Skip the tests job'
+        required: false
+        type: boolean
+        default: false
+
+      php-versions:
+        description: 'JSON array of PHP versions the tests run on (for example ["8.2","8.3"]). Composer runs on the lowest one'
+        required: false
+        type: string
+        default: '["8.1","8.2","8.3","8.4"]'
+
+      runs-on:
+        description: 'Runner label for every job (for example ubuntu-latest, windows-latest, macos-latest, or a self-hosted label)'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+
+jobs:
+  check:
+    name: Check
+    runs-on: ${{ inputs.runs-on }}
+
+    # Values required by later jobs: the version to release and its tag,
+    # whether it is a prerelease, and the PHP version for Composer.
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      php-version: ${{ steps.php.outputs.value }}
+
+    # Draft releases are returned only to a token with write access, so the
+    # version calculation and the duplicate check require contents: write.
+    # This job only reads from the repo.
+    permissions:
+      contents: write
+
+    steps:
+      # The github context in a reusable workflow is the github context of
+      # the workflow that called it, so the branch and the default branch are
+      # the caller's. A dry run creates no tag and no release, so this check
+      # applies only to runs that are not dry runs.
+      - name: Check the branch
+        if: ${{ !inputs.dry-run }}
+        shell: pwsh
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if ($env:REF_NAME -ne $env:DEFAULT_BRANCH) {
+              Write-Host "::error::Releases are made from the default branch ($env:DEFAULT_BRANCH), but this run is on $env:REF_NAME."
+              exit 1
+          }
+
+      # A tag or a release for the version fails the run here, before the
+      # tests start. A draft release does not create its tag until it is
+      # published, so releases are checked as well as tags.
+      - name: Calculate the version
+        id: version
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUMP: ${{ inputs.bump }}
+          CUSTOM_VERSION: ${{ inputs.custom-version }}
+        run: |
+          function Fail($message) {
+              Write-Host "::error::$message"
+              exit 1
+          }
+
+          $semver = '^\d+\.\d+\.\d+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$'
+
+          $tags = @(gh api --paginate "repos/$env:GH_REPO/tags?per_page=100" --jq '.[].name')
+          if ($LASTEXITCODE -ne 0) {
+              Fail 'Could not list the existing tags.'
+          }
+
+          $releases = @(gh api --paginate "repos/$env:GH_REPO/releases?per_page=100" --jq '.[].tag_name')
+          if ($LASTEXITCODE -ne 0) {
+              Fail 'Could not list the existing releases.'
+          }
+
+          # The base is the highest stable version among the tags and the
+          # releases. A name with a suffix does not match, so it is ignored.
+          $base = $null
+          foreach ($name in @($tags) + @($releases)) {
+              if ($name -match '^v?(\d+\.\d+\.\d+)$') {
+                  $candidate = [version]$Matches[1]
+                  if ($null -eq $base -or $candidate -gt $base) {
+                      $base = $candidate
+                  }
+              }
+          }
+
+          $baseText = 'none'
+          if ($null -ne $base) {
+              $baseText = $base.ToString()
+          }
+
+          if ($env:BUMP -ne 'custom' -and $env:CUSTOM_VERSION) {
+              Write-Host "::notice::custom-version is ignored when bump is $env:BUMP."
+          }
+
+          if ($env:BUMP -eq 'custom') {
+              $version = ("$env:CUSTOM_VERSION").Trim()
+              if ($version -notmatch $semver) {
+                  Fail "The custom version '$version' is not three numbers with an optional suffix, such as 1.2.3 or 1.2.3-beta.1."
+              }
+
+              $core = [version](($version -split '-')[0])
+              if ($null -ne $base -and $core -le $base) {
+                  Fail "The custom version $version is not greater than the latest stable version $baseText."
+              }
+          }
+          elseif ($env:BUMP -in 'major', 'minor', 'patch') {
+              if ($null -eq $base) {
+                  $version = '0.1.0'
+              }
+              elseif ($env:BUMP -eq 'major') {
+                  $version = "$($base.Major + 1).0.0"
+              }
+              elseif ($env:BUMP -eq 'minor') {
+                  $version = "$($base.Major).$($base.Minor + 1).0"
+              }
+              else {
+                  $version = "$($base.Major).$($base.Minor).$($base.Build + 1)"
+              }
+          }
+          else {
+              Fail "The bump '$env:BUMP' is not major, minor, patch, or custom."
+          }
+
+          $tag = "v$version"
+
+          if (($tags -contains $tag) -or ($tags -contains $version)) {
+              Fail "The tag $tag already exists."
+          }
+
+          if (($releases -contains $tag) -or ($releases -contains $version)) {
+              Fail "A release for $tag already exists, possibly as a draft."
+          }
+
+          $prerelease = 'false'
+          if ($version.Contains('-')) {
+              $prerelease = 'true'
+          }
+
+          Add-Content -Path $env:GITHUB_OUTPUT -Value @("version=$version", "tag=$tag", "prerelease=$prerelease")
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value @(
+              '## Release version',
+              '',
+              "The new version is $version. The bump is $env:BUMP and the latest stable version is $baseText."
+          )
+          exit 0
+
+      # Composer runs on the lowest PHP version in the matrix, so dependencies
+      # that require a newer PHP version fail at the build.
+      - name: Select the PHP version for Composer
+        id: php
+        shell: pwsh
+        env:
+          PHP_VERSIONS: ${{ inputs.php-versions }}
+        run: |
+          $versions = @($env:PHP_VERSIONS | ConvertFrom-Json)
+          if ($versions.Count -eq 0) {
+              Write-Host '::error::php-versions is empty.'
+              exit 1
+          }
+
+          foreach ($entry in $versions) {
+              if ("$entry" -notmatch '^\d+\.\d+$') {
+                  Write-Host "::error::The php-versions entry '$entry' is not a major and minor version, such as 8.2."
+                  exit 1
+              }
+          }
+
+          $lowest = ($versions | ForEach-Object { [version]"$_" } | Sort-Object | Select-Object -First 1).ToString()
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "value=$lowest"
+
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # The script validates every package folder. It checks for duplicate
+      # folder names and Text Domain values, and for a Version header and a
+      # matching Text Domain in each package. It writes no zips.
+      - name: Validate the packages
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          & ./scripts/wordpress-package.ps1 -Version $env:VERSION -ValidateOnly
+
+  tests:
+    name: Tests
+    needs: check
+    if: ${{ !inputs.skip-tests }}
+    permissions:
+      contents: read
+    uses: scottoffen/workflows/.github/workflows/php-tests.yml@main
+    with:
+      php-versions: ${{ inputs.php-versions }}
+      runs-on: ${{ inputs.runs-on }}
+
+  package:
+    name: Package
+    needs: [check, tests]
+    # A skipped tests job is not a failure. This job runs when the tests
+    # passed or were skipped, and does not run when they failed. A skipped
+    # dependency skips every job that depends on it, so the !cancelled()
+    # check is required for this job to run when the tests were skipped.
+    if: ${{ !cancelled() && needs.check.result == 'success' && (needs.tests.result == 'success' || needs.tests.result == 'skipped') }}
+    runs-on: ${{ inputs.runs-on }}
+
+    # This job does not push, tag, or write to the repo, so the token is
+    # limited to contents: read.
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # The script runs composer install in every package folder that has a
+      # composer.json, so Composer must be on the PATH. PHP and Composer are
+      # set up only when a package folder has a composer.json.
+      - name: Find Composer packages
+        id: composer
+        shell: pwsh
+        run: |
+          $folders = @(Get-ChildItem -Path src -Directory -ErrorAction SilentlyContinue |
+              Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'composer.json') })
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "count=$($folders.Count)"
+
+      - name: Set up PHP and Composer
+        if: ${{ steps.composer.outputs.count != '0' }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ needs.check.outputs.php-version }}
+          tools: composer:v2
+
+      # The script deletes every zip in dist/ first, so the artifact contains
+      # only zips from this run. The script exits with a non-zero code when it
+      # packages nothing, which fails the job before the artifact is uploaded.
+      - name: Build the zips
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          & ./scripts/wordpress-package.ps1 -Version $env:VERSION
+
+      # Writes a table of the zip names and sizes to the run summary, so they
+      # can be read without downloading the artifact.
+      - name: Summarize the zips
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          $lines = @("## Packages for $env:VERSION", '', '| Zip | Size |', '| --- | --- |')
+          foreach ($zip in Get-ChildItem -Path dist -Filter '*.zip' | Sort-Object Name) {
+              $lines += "| $($zip.Name) | $([math]::Round($zip.Length / 1KB, 1)) KB |"
+          }
+
+          if ($env:DRY_RUN -eq 'true') {
+              $lines += @('', 'This was a dry run, so no draft release was created.')
+          }
+
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $lines
+
+      # An artifact that is downloaded from the run page is a zip of its
+      # files, so the package zips are inside an outer zip. The outer zip is
+      # skipped only for an artifact that contains a single file, and the
+      # number of packages is not fixed.
+      - name: Upload the zips
+        uses: actions/upload-artifact@v7
+        with:
+          name: packages
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  # Creates the draft release. Publishing the draft creates the tag, and the
+  # release notes can be edited until then.
+  release:
+    name: Draft release
+    needs: [check, package]
+    if: ${{ !inputs.dry-run }}
+    runs-on: ${{ inputs.runs-on }}
+
+    # Creating a release writes to the repo, so this job requires
+    # contents: write.
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download the zips
+        uses: actions/download-artifact@v7
+        with:
+          name: packages
+          path: dist
+
+      # The check job already verified that the tag and the release do not
+      # exist. Another run can release the version while the tests and the
+      # build run, which can take several minutes, so the same two checks run
+      # again before the release is created.
+      - name: Create the draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.check.outputs.tag }}
+          PRERELEASE: ${{ needs.check.outputs.prerelease }}
+        run: |
+          function Fail($message) {
+              Write-Host "::error::$message"
+              exit 1
+          }
+
+          $tag = $env:TAG
+
+          gh api "repos/$env:GH_REPO/git/ref/tags/$tag" --silent 2>$null
+          if ($LASTEXITCODE -eq 0) {
+              Fail "The tag $tag already exists."
+          }
+
+          $existing = @(gh api --paginate "repos/$env:GH_REPO/releases?per_page=100" --jq '.[].tag_name')
+          if ($LASTEXITCODE -ne 0) {
+              Fail 'Could not list the existing releases.'
+          }
+          if ($existing -contains $tag) {
+              Fail "A release for $tag already exists, possibly as a draft."
+          }
+
+          $zips = @(Get-ChildItem -Path dist -Filter '*.zip')
+          if ($zips.Count -eq 0) {
+              Fail 'The downloaded artifact contains no zip files.'
+          }
+
+          $arguments = @($tag) + @($zips.FullName) + @('--draft', '--title', $tag, '--generate-notes', '--target', $env:GITHUB_SHA)
+          if ($env:PRERELEASE -eq 'true') {
+              $arguments += '--prerelease'
+          }
+
+          $url = gh release create @arguments
+          if ($LASTEXITCODE -ne 0) {
+              Fail "Could not create the draft release for $tag."
+          }
+
+          Write-Host "Created draft release $tag at $url"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value @("### Draft release created for $tag", '', "Edit the release notes, then publish the release: $url")
+          exit 0
