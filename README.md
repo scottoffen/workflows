@@ -23,7 +23,7 @@ This repository is public because GitHub requires a personal-account reusable wo
   - [PHP Release](#php-release)
 - [WordPress Workflows](#wordpress-workflows)
   - [WordPress Packaging Script](#wordpress-packaging-script)
-  - [WordPress Package](#wordpress-package)
+  - [WordPress Release](#wordpress-release)
 - [Repository Hygiene Workflows](#repository-hygiene-workflows)
   - [Stale](#stale)
 - [License](#license)
@@ -39,8 +39,8 @@ This repository is public because GitHub requires a personal-account reusable wo
 | Docusaurus | [Docusaurus Deploy](#docusaurus-deploy) | `.github/workflows/docusaurus-deploy-pages.yml` | Build a Docusaurus site and deploy it to GitHub Pages. |
 | PHP | [PHP Tests](#php-tests) | `.github/workflows/php-tests.yml` | Run a PHP package's tests with Composer on a matrix of PHP versions. |
 | PHP | [PHP Release](#php-release) | `.github/workflows/php-release.yml` | Check the version, run the PHP tests on the exact commit, then create the tag and the GitHub Release for a package published on Packagist. |
-| WordPress | [WordPress Packaging Script](#wordpress-packaging-script) | `scripts/wordpress-package.ps1` | PowerShell script that builds an installable zip for every theme and plugin under `src/`, and runs Composer first for a package that has a `composer.json`. It runs the same way locally and in CI. |
-| WordPress | [WordPress Package](#wordpress-package) | `.github/workflows/wordpress-package.yml` | Run the repo's packaging script in CI and upload the zips it writes as one artifact. Sets up PHP and Composer first when a package has a `composer.json`. Pull request builds label each zip with the PR number. Also creates a draft GitHub Release for a repo that ships a single theme or plugin. |
+| WordPress | [WordPress Packaging Script](#wordpress-packaging-script) | `scripts/wordpress-package.ps1` | PowerShell script that validates every theme and plugin under `src/`, builds an installable zip for each one, and runs Composer first for a package that has a `composer.json`. It can write a given version into each package's `Version` header inside the zip. It runs the same way locally and in CI. |
+| WordPress | [WordPress Release](#wordpress-release) | `.github/workflows/wordpress-release.yml` | Run the tests, package every theme and plugin under `src/` with a new version, and create a draft GitHub Release with the zips attached. The workflow is run by hand. The version is a major, minor, or patch bump of the highest stable version among the tags and releases, or a custom value. |
 | Repository hygiene | [Stale](#stale) | `.github/workflows/stale.yml` | Mark and close stale issues and pull requests on a schedule. |
 
 The `examples/` directory contains ready-to-copy caller templates for each workflow. The `scripts/` directory contains the scripts that the workflows rely on. When a workflow expects a script to exist in each consuming repo, the copy here is the template to start from. The section for each workflow describes the scripts it needs.
@@ -86,7 +86,7 @@ When a workflow runs on a pull request, GitHub lists every job as a check named 
 
 Renaming the key of the caller's job changes the names of its checks. The rule then waits for a name that never appears, and pull requests cannot be merged until the rule is updated.
 
-A workflow trigger can include a path filter, such as running only when files under `src/` change. When a pull request does not touch those paths, the workflow does not run, so its checks never appear. If one of those checks is required, GitHub waits for it indefinitely, and the pull request cannot be merged. For this reason, the callers for the build, test, and package workflows have no path filter, and their checks run on every pull request. The .NET build workflow still avoids unnecessary builds by deciding inside the workflow whether to do the work. See [Preflight and Branch Protection](#preflight-and-branch-protection).
+A workflow trigger can include a path filter, such as running only when files under `src/` change. When a pull request does not touch those paths, the workflow does not run, so its checks never appear. If one of those checks is required, GitHub waits for it indefinitely, and the pull request cannot be merged. For this reason, the callers for the build and test workflows have no path filter, and their checks run on every pull request. The .NET build workflow still avoids unnecessary builds by deciding inside the workflow whether to do the work. See [Preflight and Branch Protection](#preflight-and-branch-protection).
 
 ---
 
@@ -435,11 +435,13 @@ The following three jobs run in order:
 
 ## WordPress Workflows
 
-WordPress packaging has two parts. The [WordPress Packaging Script](#wordpress-packaging-script) builds the zips and runs the same way on a developer machine and in CI. The [WordPress Package](#wordpress-package) workflow calls that script in CI and uploads the result.
+WordPress packaging has two parts. The [WordPress Packaging Script](#wordpress-packaging-script) builds the zips and runs the same way on a developer machine and in CI. The [WordPress Release](#wordpress-release) workflow runs the tests, calls that script with a new version, and creates a draft GitHub Release with the zips attached.
+
+All packages in a repo are released together with one version. A repo with one theme or plugin is the same case with one package.
 
 ### WordPress Packaging Script
 
-The script `scripts/wordpress-package.ps1` packages every WordPress theme and plugin under `src/` into an installable zip. It uses .NET, plus Composer for a package that has a `composer.json`, and it runs the same on Windows PowerShell 5.1, PowerShell 7 on Windows, and PowerShell 7 on Linux or macOS. Repository owners run it locally to build the same zips that CI produces, and the [WordPress Package](#wordpress-package) workflow calls it.
+The script `scripts/wordpress-package.ps1` packages every WordPress theme and plugin under `src/` into an installable zip. It uses .NET, plus Composer for a package that has a `composer.json`, and it runs the same on Windows PowerShell 5.1, PowerShell 7 on Windows, and PowerShell 7 on Linux or macOS. Repository owners run it locally to build the same zips that CI produces, and the [WordPress Release](#wordpress-release) workflow calls it.
 
 The script is kept in each consuming repo, so the same file runs locally and in CI. The cost is one copy of the script per repo, and the copies can drift apart. The copy in this repository's `scripts/` folder is the template to start from.
 
@@ -448,11 +450,10 @@ The script is kept in each consuming repo, so the same file runs locally and in 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `-SourcePath` | string | `src` at the repo root | The directory that contains one folder per package. |
-| `-OutputPath` | string | `dist` at the repo root | The directory the zips are written to. It is created if it does not exist. |
-| `-Name` | string[] | (all folders) | Package only the named folders. The script fails if a named folder does not exist. |
-| `-Suffix` | string | `''` | Text appended to each zip name, such as `pr-12` or a short commit hash. |
-| `-Clean` | switch | off | Delete existing zips in the output directory before packaging. |
-| `-PassThru` | switch | off | Write one object per zip to the pipeline, in addition to the summary. |
+| `-OutputPath` | string | `dist` at the repo root | The directory that the zips are written to. The script creates it when it does not exist, and deletes every `.zip` file in it before packaging. |
+| `-Name` | string[] | (all folders) | Package only the named folders. The script still validates every folder under the source directory, and it fails when a named folder does not exist. |
+| `-Version` | string | (none) | The version to write into the `Version` header of every package, such as `1.2.3` or `1.2.3-beta.1`. The zip names use this version. Without it, each package keeps the version from its own header. |
+| `-ValidateOnly` | switch | off | Run the validation and stop. The script does not run Composer, delete anything from the output directory, or write a zip. |
 
 The default paths are resolved relative to the folder that contains the script, so they point at the repo root when the script lives in `scripts/`.
 
@@ -464,17 +465,20 @@ The following commands show the common ways to run the script from a PowerShell 
 # Package everything under src into dist
 ./scripts/wordpress-package.ps1
 
-# Package only the theme, after clearing old zips from dist
-./scripts/wordpress-package.ps1 -Name example-theme -Clean
+# Package only the theme
+./scripts/wordpress-package.ps1 -Name example-theme
 
-# Add a pull request label to every zip name
-./scripts/wordpress-package.ps1 -Suffix pr-12
+# Package everything with 0.2.0 as the version in every package
+./scripts/wordpress-package.ps1 -Version 0.2.0
+
+# Run the validation for 0.2.0 without packaging anything
+./scripts/wordpress-package.ps1 -Version 0.2.0 -ValidateOnly
 ```
 
 The commands above only work when the current shell is PowerShell. From the Windows Command Prompt, or from any other shell that is not PowerShell, start the script through PowerShell by prefixing the command with `pwsh`, as in the following example:
 
 ```bat
-pwsh ./scripts/wordpress-package.ps1 -Name example-theme -Clean
+pwsh ./scripts/wordpress-package.ps1 -Name example-theme
 ```
 
 The `pwsh` command starts PowerShell 7. The script also runs on Windows PowerShell 5.1, which is started with `powershell` instead of `pwsh`.
@@ -483,11 +487,29 @@ Run `Get-Help ./scripts/wordpress-package.ps1 -Full` in a PowerShell prompt for 
 
 #### Package Requirements
 
-The script treats each folder directly under the source directory as one package. A folder qualifies as a package under the following rules:
+The script treats each folder directly under the source directory as one package. A theme is a folder with a `style.css` that has a `Theme Name` header. A plugin is a folder with a PHP file at its root that has a `Plugin Name` header. The script skips a folder that is neither, and writes a warning for it. When `-Name` is given, the script writes that warning only for the named folders.
 
-- **One package per folder.** A theme is a folder with a `style.css` that has a `Theme Name` header. A plugin is a folder with a PHP file at its root that has a `Plugin Name` header. A folder that is neither is skipped with a warning.
-- **A `Version` header.** The script reads the version from the header for the zip name. Without one, the zip name has no version and the script warns.
-- **A matching `Text Domain` header.** WordPress expects the text domain to match the folder name, so the script warns when the header is present and differs.
+#### Validation
+
+Before the script writes anything, it validates every package folder under the source directory, whether or not `-Name` is given. The script reports every problem that it finds, and it stops when any of them is an error. The following table describes each check and how the script reports it.
+
+| Check | Without `-Version` | With `-Version` |
+|---|---|---|
+| No theme or plugin folder is found. | Error | Error |
+| Two folder names differ only by case. | Error | Error |
+| Two packages have the same `Text Domain` header. | Error | Error |
+| A package has a `Text Domain` header that differs from its folder name. | Warning | Error |
+| A package has no `Version` header. | Warning | Error |
+
+The `Text Domain` header of a package must match its folder name. The script reads the `Version` and `Text Domain` headers from the first 8192 characters of `style.css` or of the main plugin file.
+
+The value of `-Version` must be three numbers with an optional suffix, such as `1.2.3` or `1.2.3-beta.1`. The script rejects a value with a leading `v`.
+
+#### Version Header
+
+When `-Version` is given, the script replaces the value of the first `Version` line in the `style.css` or main plugin file of each package. The replacement is made inside the zip. The file on disk is not changed, and the rest of the file is written byte for byte, including its line endings. The zip name uses the given version.
+
+A `.distignore` pattern can leave the file that has the `Version` header out of the zip. There is then no header to replace, so the script fails.
 
 #### Composer Dependencies
 
@@ -499,98 +521,127 @@ composer install --no-dev --no-interaction --no-progress --prefer-dist --optimiz
 
 The script skips a folder that is not a theme or a plugin before any install runs, and it does not run Composer for a package that has no `composer.json`.
 
-The script needs `composer` on the `PATH`. When Composer is missing or the install fails, the script stops with an error and does not write a zip for that package. The `--no-dev` flag keeps development dependencies out of the zip.
+The script requires `composer` on the `PATH`. When Composer is missing or the install fails, the script stops with an error and does not write a zip for that package. The `--no-dev` flag means the zip does not contain development dependencies.
 
 The following points apply to the package folder and its files:
 
 - The script warns when the package has no `composer.lock`. Without a lock file, Composer resolves the newest versions that `composer.json` allows, so two builds of the same commit can differ. Commit `composer.lock` to make the build repeatable.
-- The install runs in the package folder itself, so the `vendor` folder it creates is in the working tree. Add `src/*/vendor/` to the repo's `.gitignore`.
-- When the package folder already has development dependencies installed, running the script removes them from its `vendor` folder, because `--no-dev` uninstalls them. Run `composer install` in the folder again to get them back.
+- The install runs in the package folder itself, so the `vendor` folder that it creates is in the working tree. Add `src/*/vendor/` to the repo's `.gitignore`.
+- The `--no-dev` flag uninstalls development dependencies, so running the script removes them from the `vendor` folder of a package that has them installed. Run `composer install` in the folder again to restore them.
 - `composer.json` and `composer.lock` are packaged like any other file. To leave them out, add `/composer.json` and `/composer.lock` to the package's `.distignore`.
 - Composer runs the scripts in the package's own `composer.json`, such as `post-install-cmd`. A package can use them to prepare its dependencies, for example to rewrite namespaces. Composer sets `COMPOSER_DEV_MODE` to `0` for those scripts under `--no-dev`, so a script that calls a development-only tool can detect it.
 
 #### Output
 
-Each zip is named `<folder>-<version>[-<suffix>].zip`, for example `example-theme-0.1.0-pr-12.zip` when a suffix is given and `example-theme-0.1.0.zip` when it is not.
+Each zip is named `<folder>-<version>.zip`, where `<folder>` is the name of the package folder, for example `example-theme-0.1.0.zip`. The version is the value of `-Version`, or the value of the package's `Version` header when `-Version` is omitted. When neither exists, the zip is named `<folder>.zip`.
 
-Inside the zip, everything sits under a single top-level folder named after the source folder, which is what WordPress expects when a zip is uploaded in the admin. Entry names always use forward slashes, so the zips also unpack correctly on Linux hosts. The script does not use `Compress-Archive`, because that command writes backslashes in Windows PowerShell 5.1.
+Inside the zip, every file is under a single top-level folder named after the source folder, and WordPress installs the package into a folder with that name when the zip is uploaded in the admin. Entry names always use forward slashes, so the zips also unpack correctly on Linux hosts. The `Compress-Archive` command writes backslashes in Windows PowerShell 5.1, so the script does not use it.
 
-When the script finishes, it prints a table of the packages it wrote. It exits with an error when it finds no package folders or creates no zips, so an empty build fails instead of passing silently.
+When the script finishes, it prints a table of the packages it wrote. It exits with an error when it finds no package folders or creates no zips, so an empty build fails.
 
 #### Excluding Files
 
 Files are left out of a package by adding a `.distignore` file to that package's folder. The format follows these rules:
 
-- Each line holds one pattern. Blank lines and lines that start with `#` are ignored.
+- Each line is one pattern. Blank lines and lines that start with `#` are ignored.
 - Patterns use PowerShell wildcards (`*` and `?`).
 - A pattern with no slash matches a file or folder of that name at any depth, for example `node_modules` or `*.map`.
 - A pattern that starts with a slash matches from the package root only, for example `/composer.json`.
 - A pattern that ends with a slash matches folders only, for example `tests/`.
 
-A small set of files is always left out: operating system and editor files, version control files, `node_modules`, any `.zip` files, and the `.distignore` file itself.
+A small set of files is always left out: operating system and editor files, version control files, `node_modules`, `.log` files, `.zip` files, and the `.distignore` file itself.
 
-### WordPress Package
+### WordPress Release
 
-Runs the packaging script in CI and uploads every zip it writes as a single artifact. The workflow contains no packaging logic of its own. It calls the [WordPress Packaging Script](#wordpress-packaging-script) and expects to find it at `./scripts/wordpress-package.ps1` in the consuming repo. The `script-path` input points the workflow at a different location. When a package folder under `src/` has a `composer.json`, the workflow sets up PHP and Composer before it runs the script, as the steps below describe. The workflow also creates a draft GitHub Release for a repo that ships a single theme or plugin, as described under [Draft Release](#draft-release). It does not publish or deploy anything else, so a release or deploy workflow can pick the artifact up later.
+Runs the tests, packages every theme and plugin under `src/` with a new version, and creates a draft GitHub Release with the zips attached. The workflow is run by hand from the Actions tab. It does not change the `Version` headers in the repo and it commits nothing. The packaging script writes the new version into the headers inside each zip, so the headers in the repo can stay at a fixed value, such as `0.1.0`.
+
+The workflow calls the [WordPress Packaging Script](#wordpress-packaging-script) from the consuming repo and the [PHP Tests](#php-tests) workflow from this repository.
 
 #### Inputs
 
 | Input | Type | Default | Description |
 |---|---|---|---|
-| `script-path` | string | `./scripts/wordpress-package.ps1` | Path to the packaging script, relative to the repo root. |
-| `runs-on` | string | `ubuntu-latest` | Runner label for the job. The script uses only .NET, so `windows-latest` and `macos-latest` also work. The job pins `shell: pwsh` for its run steps, which every GitHub-hosted image ships. |
-| `artifact-name` | string | `packages` | Name of the uploaded artifact. Artifact names must be unique within a run, so change it if one run calls this workflow more than once. |
-| `retention-days` | number | `14` | How long GitHub keeps the artifact. |
-| `php-version` | string | `8.4` | PHP version used to run Composer. The workflow sets up PHP only when a package folder under `src/` has a `composer.json`, so the input has no effect otherwise. |
-| `draft-release` | boolean | `true` | Create a draft GitHub Release when a run on the default branch packages exactly one theme or plugin and the version tag does not exist yet. Set to `false` to turn this off. The calling job must grant `contents: write` either way. See [Draft Release](#draft-release). |
+| `bump` | string | (required) | The part of the version to increase: `major`, `minor`, `patch`, or `custom`. See [Version Calculation](#version-calculation). |
+| `custom-version` | string | `''` | The version to use when `bump` is `custom`, such as `1.0.0` or `1.0.0-beta.1`, without a leading `v`. It has no effect for the other `bump` values. |
+| `dry-run` | boolean | `false` | Run every job except the draft release. The workflow still uploads the zips as an artifact. A dry run can be started from any branch, and every other run must be started from the default branch. |
+| `skip-tests` | boolean | `false` | Skip the tests job. |
+| `php-versions` | string | `["8.1","8.2","8.3","8.4"]` | JSON array of PHP versions that the tests run on. Workflow inputs cannot be arrays, so the value is a JSON string. Composer runs on the lowest version in the array. The default is the same as the default of [PHP Tests](#php-tests). |
+| `runs-on` | string | `ubuntu-latest` | Runner label for every job. Every run step sets `shell: pwsh`, which is installed on GitHub-hosted runner images. |
 
-#### How It Works
+Three values are fixed and have no input. The packaging script must be at `./scripts/wordpress-package.ps1`, the tests run `composer test` from the repo root, and the zips are uploaded as an artifact named `packages` that is kept for 14 days.
 
-The package job runs the following steps in order:
+A reusable workflow cannot define form fields, so the caller defines the trigger and the fields. The [example caller](examples/wordpress-release.yml) uses `workflow_dispatch` with a `bump` dropdown, a `custom-version` field, and checkboxes for `dry-run` and `skip-tests`. The caller can instead set `skip-tests` to a fixed value in its `with:` block, so the form has no field for it. The example caller shows both.
 
-1. The workflow checks out the repo.
-2. The workflow works out the zip suffix. A pull request run gets `pr-<number>`, and any other event gets none.
-3. The workflow looks for package folders under `src/` that have a `composer.json`. When it finds one, it sets up PHP at `php-version` and Composer with `shivammathur/setup-php`. Otherwise it skips the setup.
-4. The workflow runs the script with `-Clean`, which empties `dist/` first so the artifact holds only zips from this run, with `-Suffix` when a suffix applies, and with `-PassThru`, which makes the script return one object per zip, with `Package` and `Version` properties. The workflow uses those objects to read back how many packages were written and, for a single package, its name and version. The script exits with an error when it packages nothing, so an empty build fails the job. The script also runs `composer install` in each package folder that has a `composer.json`, and an install that fails fails the job. See [Composer Dependencies](#composer-dependencies).
-5. The workflow writes a table of zip names and sizes to the job summary.
-6. The workflow uploads `dist/*.zip` as the artifact, and fails if there is nothing to upload.
+#### Jobs
 
-The package job needs only `contents: read`. The draft release job is the only job that writes to the repo.
+The workflow runs the following four jobs in order. When a job fails, the jobs after it do not run.
 
-The script must write its zips to `dist/` at the repo root. The workflow decides which parameters it passes to the script, and the caller cannot change them, so a script at a custom `script-path` has to accept the same parameters as the template in this repository's `scripts/` folder. See [Package Requirements](#package-requirements) for what the script expects of each package folder.
+- The `check` job fails when a run that is not a dry run is on a branch other than the default branch. It calculates the version, fails when a tag or a release already exists for it, and runs the packaging script with `-Version` and `-ValidateOnly`. It also selects the PHP version for Composer, which is the lowest entry in `php-versions`.
+- The `tests` job calls [PHP Tests](#php-tests) on the commit that is being released. The job is skipped when `skip-tests` is `true`.
+- The `package` job sets up PHP and Composer when a package folder under `src/` has a `composer.json`, and then runs the packaging script with the new version. It writes a table of zip names and sizes to the job summary, and uploads `dist/*.zip` as the artifact. The job runs when the tests passed or were skipped.
+- The `release` job creates the draft release. The job is skipped on a dry run.
+
+Draft releases are returned only to a token with write access, so the `check` job requires `contents: write` to find them. The `release` job requires it to create the release. The `package` job requires only `contents: read`.
+
+A reusable workflow cannot request more access than its caller grants, so the calling job must grant `contents: write`. GitHub checks the permissions before it evaluates any job condition, so the grant is required even for a dry run. A caller that grants only `contents: read` fails at startup with no jobs.
+
+#### Version Calculation
+
+The base version is the highest stable version among the repo's tags and releases, drafts included. A name matches when it is three numbers with an optional leading `v`, such as `v1.2.3` or `1.2.3`. A name with a suffix, such as `v1.3.0-beta.1`, is ignored. The following table shows the result for each `bump` value when the base version is `1.2.3`.
+
+| `bump` | Result |
+|---|---|
+| `major` | `2.0.0` |
+| `minor` | `1.3.0` |
+| `patch` | `1.2.4` |
+| `custom` | The value of `custom-version`, as given. |
+
+When the repo has no stable version, `major`, `minor`, and `patch` all produce `0.1.0`.
+
+A `custom-version` value must be three numbers with an optional suffix, without a leading `v`. Its three numbers must be greater than the base version, so the workflow rejects a value such as `1.2.3-beta.1` when the base version is `1.2.3`. A version with a suffix is marked as a pre-release on the draft release, and it is never used as a base version.
+
+Drafts count toward the base version. When a draft release for `v1.2.4` has not been published, the next `patch` run produces `1.2.5` instead of colliding with the draft. To make the workflow produce `1.2.4` again, delete the draft release.
+
+The `check` job fails when the `v<version>` tag exists, or when a release for that tag exists, drafts included. A draft release does not create its tag until it is published, so the job checks releases as well as tags. Another run can release the version while the tests and the build run, so the `release` job runs the same two checks again before it creates the draft.
 
 #### Draft Release
 
-Unless `draft-release` is set to `false`, the workflow runs a second job after the package job. The job creates a draft GitHub Release when all of the following conditions are met:
-
-1. The run is on the default branch and is not a pull request.
-2. The packaging script wrote exactly one zip, which means the repo ships a single theme or plugin.
-3. The package has a `Version` header made of three numbers with an optional suffix, such as `1.2.3` or `1.2.3-beta.1`. A leading `v` is ignored.
-4. Neither the tag `v<version>` nor any release for that tag exists yet. Drafts count, because a draft does not create its tag until it is published.
-
-If the first two conditions are not met, the job does not run. If the last two are not met, the job runs, creates nothing, and records the reason in the job summary. That is not a failure, because pushing to the default branch without changing the version is normal.
-
-When all of the conditions are met, the job creates a draft release named `v<version>` with the zip attached and with generated release notes as a starting point. A version with a suffix is marked as a pre-release. The release is a draft so that the notes can be edited before the release is public. Publishing the draft creates the tag at the commit the workflow ran on.
-
-The calling job must grant `contents: write`, because a reusable workflow cannot request more access than its caller grants. GitHub checks this before it decides which jobs run, so the grant is required even when `draft-release` is `false`. A caller that grants only `contents: read` fails at startup with no jobs. Only the draft release job uses the write access.
+The `release` job downloads the artifact and creates a draft release named `v<version>` with every zip attached and with generated release notes as a starting point. A version with a suffix is marked as a pre-release. The release is a draft, so the release notes can be edited before the release is public. Publishing the draft creates the tag, and the tag points at the commit that the workflow ran on, which is the commit that the tests ran against.
 
 #### The Artifact
 
-The zips are uploaded together as one artifact. GitHub delivers every artifact as a zip file when it is downloaded from the run page, so the download is a zip that contains the package zips. The outer zip can only be skipped for an artifact that holds a single file, and a repo can have any number of packages, so the workflow always accepts the outer zip.
+The zips are uploaded together as one artifact. An artifact that is downloaded from the run page is a zip of its files, so the download is a zip that contains the package zips. The outer zip is skipped only for an artifact that contains a single file, and the number of packages is not fixed, so the download always has the outer zip.
 
-The outer zip only affects manual downloads from the run page. The [draft release](#draft-release) attaches the package zip itself, so the release asset is the installable theme or plugin zip.
+The outer zip affects only manual downloads from the run page. The [draft release](#draft-release) attaches each package zip itself, so the release assets are the installable theme and plugin zips. On a dry run, the artifact is the only output.
 
 If the outer zip becomes a problem, the alternative is to upload each package as its own artifact, using a matrix with one upload per package.
 
+#### Requirements
+
+The calling repo must meet the following requirements:
+
+- The packaging script must be at `scripts/wordpress-package.ps1`. The copy in this repository's `scripts/` folder is the template to start from.
+- The repo must have a `composer.json` at its root with a `test` script. The tests run `composer test` from the repo root. A repo with no tests must set `skip-tests` to `true`.
+- Each package folder under `src/` must pass the checks that the script runs with `-Version`, which are described under [Validation](#validation).
+
 #### Setup
 
-1. Copy `scripts/wordpress-package.ps1` from this repository to `scripts/wordpress-package.ps1` in the consuming repo, and copy `examples/wordpress-package.yml` to `.github/workflows/`.
-2. Check that each package folder under `src/` has the header the script looks for. Run the script locally, as described under Usage in [WordPress Packaging Script](#wordpress-packaging-script), to see what it picks up.
-3. If a package folder has a `composer.json`, add `src/*/vendor/` to the repo's `.gitignore` and commit the `composer.lock`. Run the script locally with Composer installed, and confirm the zip contains the `vendor` folder.
-4. Open a throwaway PR and confirm the `package` check runs, the job summary lists the zips, and the artifact downloads.
-5. Make sure the calling job grants `contents: write`, which the example caller already does. The grant is needed even when draft releases are turned off. To turn them off, set `draft-release: false` in the caller's `with:` block.
+1. Copy `scripts/wordpress-package.ps1` from this repository to `scripts/wordpress-package.ps1` in the consuming repo, and copy `examples/wordpress-release.yml` to `.github/workflows/release.yml`.
+2. Run `./scripts/wordpress-package.ps1 -Version 0.1.0 -ValidateOnly` locally, as described under Usage in [WordPress Packaging Script](#wordpress-packaging-script), and fix every error that it reports.
+3. If a package folder has a `composer.json`, add `src/*/vendor/` to the repo's `.gitignore` and commit the `composer.lock`. Run the script locally with Composer installed, and confirm that the zip contains the `vendor` folder.
+4. Go to **Actions → Release → Run workflow**, select the branch to check, select the checkbox labeled **Run every job except the draft release**, and click **Run workflow**. Confirm that the job summary shows the version you expect, that the tests pass, and that the artifact downloads. No release is created.
+5. Run the workflow again from the default branch without the dry run. Open the draft release under **Releases**, edit the release notes, and click **Publish release**.
 
-The caller has no path filter, so it is safe to make `package` a required status check. As with the other workflows, the required check name is derived from the **caller's** job name.
+> [!NOTE]
+> The workflow can also be started with the GitHub CLI. Replace `<repo>` with the name of the repository. The first command starts a dry run, the second creates a draft release for a `patch` bump, and the third creates a draft release with a custom version.
+>
+> ```bash
+> gh workflow run release.yml --repo scottoffen/<repo> -f dry-run=true
+> gh workflow run release.yml --repo scottoffen/<repo> -f bump=patch
+> gh workflow run release.yml --repo scottoffen/<repo> -f bump=custom -f custom-version=1.0.0
+> ```
+
+The example caller runs only when it is started by hand, so it produces no status checks for pull requests.
 
 ---
 

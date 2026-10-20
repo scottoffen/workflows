@@ -66,7 +66,7 @@ jobs:
 
     steps:
       - name: Run stale check
-        uses: actions/stale@v10
+        uses: actions/stale@v11
         with:
           # Authentication. The default GITHUB_TOKEN is sufficient for
           # the issues and pull-requests permissions declared above.

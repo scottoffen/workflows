@@ -1,0 +1,85 @@
+name: Release
+
+# Package and release WordPress themes and plugins. Calls the shared reusable
+# workflow.
+#
+# Run this by hand from the Actions tab. The workflow runs the tests, builds
+# an installable zip for every folder under src/ with the new version in its
+# Version header, and creates a draft GitHub Release with the zips attached.
+# The release is a draft, so the release notes can be edited before it is
+# published. Publishing the draft creates the tag.
+#
+# The bump field sets the part of the version to increase. The new version is
+# calculated from the highest stable version among the repo's tags and
+# releases, and the first release is 0.1.0. To set the version by hand, for
+# example to skip ahead, select custom and enter the version in the
+# custom-version field. The custom-version field has no effect for the other
+# options.
+#
+# Select the dry-run checkbox to run every job except the draft release. The
+# zips are still uploaded as an artifact, so they can be inspected. A dry run
+# can be started from any branch, and a release must be started from the
+# default branch.
+#
+# A reusable workflow cannot define form fields, so they are defined here.
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'The part of the version to increase'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - custom
+      custom-version:
+        description: 'Custom version value, such as 1.0.0 or 1.0.0-beta.1 (used only when bump is custom)'
+        required: false
+        type: string
+      dry-run:
+        description: 'Run every job except the draft release'
+        required: false
+        default: false
+        type: boolean
+      skip-tests:
+        description: 'Skip the tests'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+# A release that is running is never cancelled. A run that starts while another
+# run is in progress is pending until that run finishes, and then calculates
+# its version from the tags and releases that exist at that point. GitHub keeps
+# at most one pending run in the group, so a newer pending run cancels an older
+# one.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    uses: scottoffen/workflows/.github/workflows/wordpress-release.yml@main
+    permissions:
+      contents: write    # list draft releases, and create the draft release
+    with:
+      bump: ${{ inputs.bump }}
+      custom-version: ${{ inputs.custom-version }}
+      dry-run: ${{ inputs.dry-run }}
+      skip-tests: ${{ inputs.skip-tests }}
+      # To skip the tests without being prompted, delete the skip-tests field
+      # from the form above and replace the line above with the following:
+      #
+      # skip-tests: true
+      #
+      # The other inputs have defaults for a repo that supports PHP 8.1 through
+      # 8.4, with jobs that run on ubuntu-latest. Add one only when the repo
+      # differs, for example:
+      #
+      # php-versions: '["8.2","8.3","8.4"]'
+      # runs-on: windows-latest
