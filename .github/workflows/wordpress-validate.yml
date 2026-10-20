@@ -1,0 +1,118 @@
+# Reusable workflow: build the WordPress themes and plugins in a repo without
+# releasing anything.
+#
+# The workflow runs the packaging script on every theme and plugin under src/,
+# the same way the release workflow does, so a change that breaks the build
+# fails here before it is merged. The script validates every package, runs
+# Composer in each package that has a composer.json, and writes a zip for each
+# package. The run checks that the build works, so the zips are discarded.
+#
+# The script is called with the fixed version 0.1.0. A version turns the
+# script's warnings about the Version and Text Domain headers into errors, so a
+# package that could not be released also fails here.
+#
+# The workflow has one job, named Build. A reusable workflow has no triggers,
+# so the caller supplies them, normally pull_request and a push to the default
+# branch. The caller should not use a path filter. When a pull request does not
+# match the filter, the workflow does not run, and a required check that does
+# not run blocks the merge. The check name is the key of the caller's job
+# followed by the name of this job, so a caller job with the key validate
+# produces validate / Build.
+#
+# The caller controls behavior with inputs:
+#
+#   - php-versions: JSON array of PHP versions, such as '["8.2","8.3"]'.
+#                   Composer runs on the lowest version in the array. Workflow
+#                   inputs cannot be arrays, so the value is a JSON string. The
+#                   default is the same as the default of the PHP tests
+#                   workflow and the WordPress release workflow.
+#   - runs-on:      runner label for the job. Defaults to ubuntu-latest. Every
+#                   run step sets shell: pwsh, which is installed on
+#                   GitHub-hosted runner images.
+#
+# The calling repo must have the packaging script at
+# ./scripts/wordpress-package.ps1.
+#
+# Values from inputs are passed to the shell through env vars, never by
+# interpolating them into the script text, so a crafted input cannot run as
+# code.
+name: WordPress Validate (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      php-versions:
+        description: 'JSON array of PHP versions (for example ["8.2","8.3"]). Composer runs on the lowest one'
+        required: false
+        type: string
+        default: '["8.1","8.2","8.3","8.4"]'
+
+      runs-on:
+        description: 'Runner label for the job (for example ubuntu-latest, windows-latest, macos-latest, or a self-hosted label)'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+
+jobs:
+  build:
+    name: Build
+    runs-on: ${{ inputs.runs-on }}
+
+    # The job only reads the repo. Nothing here pushes, tags, or writes back,
+    # so the token is limited to contents: read.
+    permissions:
+      contents: read
+
+    steps:
+      # Composer runs on the lowest PHP version in the list, so dependencies
+      # that require a newer PHP version fail here instead of at a release.
+      - name: Select the PHP version for Composer
+        id: php
+        shell: pwsh
+        env:
+          PHP_VERSIONS: ${{ inputs.php-versions }}
+        run: |
+          $versions = @($env:PHP_VERSIONS | ConvertFrom-Json)
+          if ($versions.Count -eq 0) {
+              Write-Host '::error::php-versions is empty.'
+              exit 1
+          }
+
+          foreach ($entry in $versions) {
+              if ("$entry" -notmatch '^\d+\.\d+$') {
+                  Write-Host "::error::The php-versions entry '$entry' is not a major and minor version, such as 8.2."
+                  exit 1
+              }
+          }
+
+          $lowest = ($versions | ForEach-Object { [version]"$_" } | Sort-Object | Select-Object -First 1).ToString()
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "value=$lowest"
+
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # The script runs composer install in every package folder that has a
+      # composer.json, so Composer must be on the PATH. PHP and Composer are
+      # set up only when a package folder has a composer.json.
+      - name: Find Composer packages
+        id: composer
+        shell: pwsh
+        run: |
+          $folders = @(Get-ChildItem -Path src -Directory -ErrorAction SilentlyContinue |
+              Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'composer.json') })
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "count=$($folders.Count)"
+
+      - name: Set up PHP and Composer
+        if: ${{ steps.composer.outputs.count != '0' }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ steps.php.outputs.value }}
+          tools: composer:v2
+
+      # The script validates every package before it writes anything, and it
+      # exits with a non-zero code when a check fails, when Composer fails, or
+      # when it packages nothing.
+      - name: Build the packages
+        shell: pwsh
+        run: |
+          & ./scripts/wordpress-package.ps1 -Version 0.1.0

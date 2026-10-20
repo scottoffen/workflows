@@ -1,0 +1,38 @@
+# Build the WordPress themes and plugins on every pull request and on pushes
+# to main. Delegates to the shared reusable workflow.
+#
+# The build runs the packaging script on every theme and plugin under src/, so
+# a change that breaks a package, its composer.json, or its headers fails
+# before it is merged. Nothing is released and no zip is kept. The Release
+# workflow creates the release and runs only when it is started by hand.
+#
+# The trigger has no path filter on purpose. A pull request that does not
+# match a path filter does not run the workflow, so a required check stays
+# pending and the pull request cannot be merged. This check is a good
+# candidate to require. Its name is "validate / Build", which is the key of
+# this job followed by the name of the job in the reusable workflow.
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    uses: scottoffen/workflows/.github/workflows/wordpress-validate.yml@main
+    permissions:
+      contents: read
+    # All defaults suit a repo that supports PHP 8.1 through 8.4, with jobs
+    # that run on ubuntu-latest, so most repos do not require a 'with:' block.
+    # Add inputs only if this repo differs, for example:
+    #
+    # with:
+    #   php-versions: '["8.2","8.3","8.4"]'
+    #   runs-on: windows-latest
+    #
+    # If you change php-versions here, change it in the tests and release
+    # workflows too, so Composer runs on the same PHP version in all three.
